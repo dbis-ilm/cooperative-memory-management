@@ -1,9 +1,9 @@
 # Cooperative Memory Management for Table and Temporary Data
 
 This is a prototype system for evaluating cooperative memory management for database management systems.
-See the paper submitted to the 1st Workshop on Simplicity in Management of Data (SiMoD) for a discussion of the idea and experimental results:
+See the [paper](https://doi.org/10.1145/3596225.3596230) for a discussion of the idea and experimental results:
 
-Robert Lasch, Thomas Legler, Norman May, Bernhard Scheirle, Kai-Uwe Sattler: *Cooperative Memory Management for Table and Temporary Data*
+Robert Lasch, Thomas Legler, Norman May, Bernhard Scheirle, Kai-Uwe Sattler: *Cooperative Memory Management for Table and Temporary Data*, 1st Workshop on Simplicity in Management of Data (SiMoD '23), June 23, 2023, Bellevue, WA, USA.
 
 ## Running the experiments
 Requirements for building the project are:
