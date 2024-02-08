@@ -694,9 +694,9 @@ int main(int argc, char** argv) {
     int ret = 0;
     {
         uint64_t num_threads = JobManager::configureNumThreads(FLAGS_parallel);
-        DB db(FLAGS_memory_limit, path, FLAGS_sandbox, FLAGS_no_dirty_writeback, !FLAGS_no_async_flush, !FLAGS_no_eviction_target, num_threads, FLAGS_exmap, true, std::move(partitioning_strategy), 16ull * 1024ull * 1024ull); // 16M pages = 64 GiB max DB size
+        DB db(FLAGS_memory_limit, path, FLAGS_sandbox, FLAGS_no_dirty_writeback, !FLAGS_no_async_flush, !FLAGS_no_eviction_target, num_threads + 1, FLAGS_exmap, true, std::move(partitioning_strategy), 16ull * 1024ull * 1024ull); // 16M pages = 64 GiB max DB size
         JobManager job_manager(num_threads, db);
-        ExecutionContext context(job_manager, db, 0, 0);
+        ExecutionContext context(job_manager, db, 0, num_threads, false);
 
 #ifdef VTUNE_PROFILING
         __itt_task_end(itt_domain);

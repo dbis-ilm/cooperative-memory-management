@@ -32,20 +32,17 @@ ExternalProject_Add(
     INSTALL_COMMAND ""
 )
 
-if (NOT IS_DIRECTORY ${CMAKE_SOURCE_DIR}/data/tpcch/1)
-    execute_process(
-        COMMAND ${CMAKE_SOURCE_DIR}/scripts/ch-benchmark-dbgen.sh ${CMAKE_SOURCE_DIR}/data/tpcch 1
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/frontend/chbenchmark/src/chbenchmark)
-endif()
+set(CH_DATA_DIR ${CMAKE_SOURCE_DIR}/data/tpcch)
 
-if (NOT IS_DIRECTORY ${CMAKE_SOURCE_DIR}/data/tpcch/10)
-    execute_process(
-        COMMAND ${CMAKE_SOURCE_DIR}/scripts/ch-benchmark-dbgen.sh ${CMAKE_SOURCE_DIR}/data/tpcch 10
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/frontend/chbenchmark/src/chbenchmark)
-endif()
+foreach (NUM_WAREHOUSES 1 10 100)
+    set(CH_WH_DATA_FILES ${CH_DATA_DIR}/${NUM_WAREHOUSES}/CUSTOMER.tbl ${CH_DATA_DIR}/${NUM_WAREHOUSES}/DISTRICT.tbl ${CH_DATA_DIR}/${NUM_WAREHOUSES}/HISTORY.tbl ${CH_DATA_DIR}/${NUM_WAREHOUSES}/ITEM.tbl ${CH_DATA_DIR}/${NUM_WAREHOUSES}/NATION.tbl ${CH_DATA_DIR}/${NUM_WAREHOUSES}/NEWORDER.tbl ${CH_DATA_DIR}/${NUM_WAREHOUSES}/ORDERLINE.tbl ${CH_DATA_DIR}/${NUM_WAREHOUSES}/ORDER.tbl ${CH_DATA_DIR}/${NUM_WAREHOUSES}/REGION.tbl ${CH_DATA_DIR}/${NUM_WAREHOUSES}/STOCK.tbl ${CH_DATA_DIR}/${NUM_WAREHOUSES}/SUPPLIER.tbl ${CH_DATA_DIR}/${NUM_WAREHOUSES}/WAREHOUSE.tbl)
+    add_custom_command(
+        OUTPUT ${CH_WH_DATA_FILES}
+        COMMAND ${CMAKE_SOURCE_DIR}/scripts/ch-benchmark-dbgen.sh ${CH_DATA_DIR} ${NUM_WAREHOUSES}
+        DEPENDS chbenchmark
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/frontend/chbenchmark/src/chbenchmark
+        VERBATIM)
+    list(APPEND CH_DATA_FILES ${CH_WH_DATA_FILES})
+endforeach()
 
-if (NOT IS_DIRECTORY ${CMAKE_SOURCE_DIR}/data/tpcch/100)
-    execute_process(
-        COMMAND ${CMAKE_SOURCE_DIR}/scripts/ch-benchmark-dbgen.sh ${CMAKE_SOURCE_DIR}/data/tpcch 100
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/frontend/chbenchmark/src/chbenchmark)
-endif()
+add_custom_target(tpcch_data ALL DEPENDS ${CH_DATA_FILES})

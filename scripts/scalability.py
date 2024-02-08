@@ -42,8 +42,7 @@ def run_experiments(result_path: str):
             p = os.path.join(olap_path, str(num_threads))
             print(f"Skipped '{p}'")
 
-def analyze_results(result_path: str):
-    # load OLTP data
+def create_figures(result_path: str, figure_path: str):
     oltp_path = os.path.join(result_path, 'oltp-scalability')
     oltp_threads = []
     tpmcs = []
@@ -53,6 +52,7 @@ def analyze_results(result_path: str):
         if tpmc != 0:
             oltp_threads.append(int(num_threads))
             tpmcs.append(tpmc)
+    oltp_threads, tpmcs = zip(*sorted(zip(oltp_threads, tpmcs)))
 
     # load OLAP data
     olap_path = os.path.join(result_path, 'olap-scalability')
@@ -65,29 +65,31 @@ def analyze_results(result_path: str):
             continue
         llog = pd.read_csv(llog_path)
         if not llog[llog.measurement == 'q09'].empty:
+            # TODO: check variance!
             throughput = 10**6 / llog[llog.measurement == 'q09'].time.median() # 10**6 because llog is in us, and we want throughput per second
             olap_threads.append(int(num_threads))
             olap_throughput.append(throughput)
+    olap_threads, olap_throughput = zip(*sorted(zip(olap_threads, olap_throughput)))
 
     fig, axs = plt.subplots(1, 2)
-    fig.set_size_inches(8, 3)
+    fig.set_size_inches(6, 2.6)
 
     # plot OLTP
     axs[0].plot(oltp_threads, tpmcs, marker='x')
     axs[0].set_xlabel('# Threads')
     axs[0].set_ylabel('OLTP Throughput [MtpmC]')
     axs[0].grid()
-    axs[0].set_title('In-Memory OLTP Scalability (TPC-C)')
+    axs[0].set_title('TPC-C')
 
     # plot OLAP
     axs[1].plot(olap_threads, olap_throughput, marker='x')
     axs[1].set_xlabel('# Threads')
     axs[1].set_ylabel('OLAP Throughput [Q09/s]')
     axs[1].grid()
-    axs[1].set_title('In-Memory OLAP Scalability (CH Q09)')
+    axs[1].set_title('CH Q09')
 
     for ax in axs:
-        ax.set_xticks([1, 4, 8, 16, 32, 38, 64, 76])
+        ax.set_xticks([1, 8, 16, 38, 64, 76])
 
     fig.tight_layout()
-    #fig.savefig('scalability.svg')
+    fig.savefig(os.path.join(figure_path, 'scalability.png'), dpi=300)

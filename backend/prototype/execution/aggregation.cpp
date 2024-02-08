@@ -17,6 +17,7 @@ AggregationBreaker::AggregationBreaker(VMCache& vmcache, BatchDescription& batch
 , vmcache(vmcache)
 , key_size(key_size)
 , hts(num_workers, nullptr)
+, flush_count(0)
 , flushed_tuples(num_workers, std::vector<std::shared_ptr<Batch>>()) {
     ht_capacity = (LOCAL_HT_SIZE - LOCAL_HT_SIZE_SIZE) * 8 / (key_size * 8 + 1);
     while (LOCAL_HT_SIZE < LOCAL_HT_SIZE_SIZE + ht_capacity * key_size + LOCAL_HT_BITSET_SIZE(ht_capacity)) {

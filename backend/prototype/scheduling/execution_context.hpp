@@ -16,7 +16,7 @@ public:
     Dispatcher& getDispatcher() const { return job_manager.getDispatcher(); }
     DB& getDB() const { return db; }
     VMCache& getVMCache() const { return db.vmcache; }
-    size_t getWorkerCount() const { return job_manager.getWorkerCount(); }
+    size_t getWorkerCount() const { return job_manager.getWorkerCount() + 1; } // 1 additional worker for the main thread
     uint32_t getSocket() const { return socket; }
     uint32_t getWorkerId() const { return worker_id; }
     bool isCreatedByJobManager() const { return created_by_job_manager; }
