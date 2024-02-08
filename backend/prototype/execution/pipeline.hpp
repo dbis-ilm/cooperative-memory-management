@@ -7,6 +7,8 @@
 #include "../scheduling/execution_context.hpp"
 #include "batch.hpp"
 
+class AggregationBreaker;
+class AggregationOperator;
 class DB;
 class DefaultBreaker;
 class JoinBreaker;
@@ -15,6 +17,7 @@ class OperatorBase;
 enum class Order;
 class PipelineStarterBase;
 class PipelineBreakerBase;
+class PipelineJob;
 class QEP;
 class SortBreaker;
 class SortOperator;
@@ -26,6 +29,7 @@ protected:
     std::shared_ptr<PipelineStarterBase> starter = nullptr;
     std::shared_ptr<PipelineBreakerBase> breaker = nullptr;
     std::shared_ptr<OperatorBase> last_operator = nullptr;
+    std::shared_ptr<PipelineJob> job = nullptr; // note: we keep a reference to job to ensure that it does not get destroyed before the pipeline has finished execution (as the dispatcher does not hold smart pointers to jobs)
     QEP* qep = nullptr;
     std::vector<size_t> pipeline_dependencies; // ids of pipelines that have to execute before this pipeline can
 
@@ -41,8 +45,11 @@ public:
 
     std::shared_ptr<DefaultBreaker> addDefaultBreaker(const ExecutionContext context);
     std::shared_ptr<JoinBreaker> addJoinBreaker(VMCache& vmcache, const ExecutionContext context);
+    std::shared_ptr<AggregationBreaker> addAggregationBreaker(VMCache& vmcache, const size_t key_size, const ExecutionContext context);
     std::shared_ptr<SortBreaker> addSortBreaker(const std::vector<NamedColumn>& sort_keys, const std::vector<Order>& sort_orders, size_t num_workers);
+    std::shared_ptr<SortBreaker> addSortBreaker(std::function<int(const Row&, const Row&)>&& comp, size_t num_workers);
     std::shared_ptr<JoinProbe> addJoinProbe(VMCache& vmcache, const Pipeline& build_side, std::vector<NamedColumn>&& output_columns);
+    std::shared_ptr<AggregationOperator> addAggregation(VMCache& vmcache, const Pipeline& input);
     std::shared_ptr<SortOperator> addSort(VMCache& vmcache, const Pipeline& input);
 
     QEP* getQEP() const { return qep; }
@@ -58,15 +65,19 @@ public:
     ExecutablePipeline(size_t id) : Pipeline(id) {}
 
     // executable pipeline that starts with a full table scan
-    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context);
-    // executable pipeline that starts with a index scan
-    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, Identifier search_value, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context);
-    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<2> search_value, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context);
-    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<3> search_value, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context);
-    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<4> search_value, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context);
-    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<4> from_search_value, CompositeKey<4> to_search_value, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context);
+    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context);
+    // executable pipeline that starts with an index scan
+    template <size_t n>
+    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<n> search_value, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context, size_t result_limit = 0);
+    template <size_t n>
+    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<n> from_search_value, CompositeKey<n> to_search_value, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context, size_t result_limit = 0);
+    // executable pipeline that starts with an index update
+    template <size_t n>
+    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<n> search_value, const std::vector<NamedColumn>&& update_columns, const std::vector<std::function<void(void*)>>& updates, const ExecutionContext context);
+    template <size_t n>
+    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<n> from_search_value, CompositeKey<n> to_search_value, const std::vector<NamedColumn>&& update_columns, const std::vector<std::function<void(void*)>>& updates, const ExecutionContext context);
     // executable pipeline that starts with a full table scan with filtering
-    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, const std::vector<uint64_t>& filter_column_cids, const std::vector<uint32_t>&& filter_values, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context);
+    ExecutablePipeline(size_t id, DB& db, const std::string& table_name, const std::vector<NamedColumn>&& filter_columns, const std::vector<Identifier>&& filter_values, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context);
 
     void startExecution(QEP* qep, const ExecutionContext context);
 };

@@ -5,7 +5,7 @@ Batch::Batch(VMCache& vmcache, uint32_t row_size, uint32_t worker_id)
 , first_valid_row_id(0)
 , row_size(row_size)
 , current_size(0)
-, max_size((PAGE_SIZE / (row_size * 8 + 1)) * 8)
+, max_size(PAGE_SIZE * 8 / (row_size * 8 + 1))
 , worker_id(worker_id)
 , vmcache(vmcache) {
     char* data_raw = vmcache.allocateTemporaryPage(worker_id);
@@ -21,7 +21,7 @@ void BatchDescription::swap(BatchDescription& other) {
     columns.swap(other.columns);
 }
 
-void BatchDescription::addColumn(const std::string& pipeline_column_name, std::shared_ptr<TemporaryColumnBase> column) {
+void BatchDescription::addColumn(const std::string& pipeline_column_name, std::shared_ptr<ColumnBase> column) {
     for (auto& column : columns) {
         if (column.name == pipeline_column_name)
             throw std::runtime_error("Pipeline column name or alias '" + pipeline_column_name + "' already exists");

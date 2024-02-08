@@ -6,7 +6,6 @@
 
 #include "prototype/core/db.hpp"
 #include "prototype/execution/pipeline_breaker.hpp"
-#include "prototype/execution/temporary_column.hpp"
 
 const size_t AGGREGATION_KEY_SIZE = 25 + 4;
 

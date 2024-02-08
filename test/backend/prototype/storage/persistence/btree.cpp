@@ -1,8 +1,9 @@
-#include "../../core/db_test.hpp"
+#include "test/shared/db_test.hpp"
 #include "prototype/core/db.hpp"
 #include "prototype/core/types.hpp"
 #include "prototype/scheduling/execution_context.hpp"
 #include "prototype/storage/persistence/btree.hpp"
+#include "prototype/storage/persistence/table.hpp"
 
 TEST(BTree, lowerBound) {
     size_t array[] = { 1, 6, 9, 10, 12, 15 };
@@ -32,6 +33,24 @@ TEST_F(BTreeFixture, double_insert) {
     EXPECT_ANY_THROW(tree.insert(1, 2));
 }
 
+TEST_F(BTreeFixture, remove) {
+    BTree<uint32_t, size_t> tree(db->vmcache, context->getWorkerId());
+    tree.insert(1, 4);
+    tree.insert(2, 3);
+    tree.insert(3, 2);
+    tree.insert(4, 1);
+    auto it = tree.lookupExact(2);
+    EXPECT_NE(it, tree.end());
+    EXPECT_EQ((*it).first, 2);
+    EXPECT_EQ((*it).second, 3);
+    EXPECT_EQ(tree.getCardinality(), 4);
+    it.release();
+    tree.remove(2);
+    it = tree.lookupExact(2);
+    EXPECT_TRUE(it == tree.end());
+    EXPECT_EQ(tree.getCardinality(), 3);
+}
+
 TEST_F(BTreeFixture, lookup) {
     BTree<uint32_t, size_t> tree(db->vmcache, context->getWorkerId());
     tree.insert(3, 1);
@@ -58,8 +77,21 @@ TEST_F(BTreeFixture, lookup) {
     it = tree.lookup(2);
     EXPECT_NE(it, tree.end());
     EXPECT_EQ((*it).second, 6);
+    // exact lookups of non-existent keys should return the end() iterator
     it = tree.lookupExact(0);
     EXPECT_EQ(it, tree.end());
+    // looking up a key beyond the key range present in the tree should return the end() iterator
+    it = tree.lookup(413);
+    EXPECT_EQ(it, tree.end());
+
+    // make sure that the root node's fence keys are correct
+    SharedGuard<BTree<uint32_t, size_t>::InnerNode> tree_root(db->vmcache, tree.getRootPid(), context->getWorkerId());
+    EXPECT_EQ(tree_root->lfence, 1);
+    EXPECT_EQ(tree_root->rfence, 413);
+
+    // test lookupValue()
+    EXPECT_EQ(tree.lookupValue(413), std::nullopt);
+    EXPECT_EQ(tree.lookupValue(1).value(), 4);
 }
 
 TEST_F(BTreeFixture, leaf_node_split) {
@@ -75,6 +107,15 @@ TEST_F(BTreeFixture, leaf_node_split) {
     }
 }
 
+TEST_F(BTreeFixture, cardinality) {
+    const size_t key_count = 918;
+    BTree<size_t, size_t> tree(db->vmcache, context->getWorkerId());
+    for (size_t i = 0; i < key_count; i++) {
+        tree.insert(i, i);
+    }
+    ASSERT_EQ(tree.getCardinality(), key_count);
+}
+
 TEST_F(BTreeFixture, inner_node_split) {
     const size_t node_size = 128;
     const size_t key_count = node_size / (sizeof(size_t) * 2) * 512;
@@ -87,6 +128,35 @@ TEST_F(BTreeFixture, inner_node_split) {
         EXPECT_NE(it, tree.end());
         ASSERT_EQ((*it).second, i);
     }
+}
+
+const size_t NODE_SIZE = 128;
+using TestBTree = BTree<size_t, size_t, NODE_SIZE>;
+void checkLevel(PageId pid, size_t expected_level, const std::shared_ptr<DB>& db, const std::shared_ptr<ExecutionContext>& context) {
+    TestBTree::InnerNode* current = reinterpret_cast<TestBTree::InnerNode*>(db->vmcache.fixShared(pid, context->getWorkerId()));
+    for (size_t i = 0; i < current->n_keys + 1; i++) {
+        ASSERT_EQ(current->level, expected_level);
+        if (current->level != 1)
+            checkLevel(current->children[i], current->level - 1, db, context);
+    }
+    db->vmcache.unfixShared(pid);
+}
+
+// ensure that the 'level' of BTree nodes decreases monotonically from the root
+TEST_F(BTreeFixture, monotonic_levels) {
+    const size_t key_count = NODE_SIZE / (sizeof(size_t) * 2) * 512;
+    TestBTree tree(db->vmcache, context->getWorkerId());
+    for (size_t i = 0; i < key_count; i++) {
+        tree.insert(i, i);
+    }
+
+    PageId current_pid = tree.getRootPid();
+    TestBTree::InnerNode* current = reinterpret_cast<TestBTree::InnerNode*>(db->vmcache.fixShared(current_pid, context->getWorkerId()));
+    for (size_t i = 0; i < current->n_keys + 1; i++) {
+        ASSERT_GT(current->level, 1);
+        checkLevel(current->children[i], current->level - 1, db, context);
+    }
+    db->vmcache.unfixShared(current_pid);
 }
 
 TEST_F(BTreeFixture, insertion_order) {
@@ -106,17 +176,27 @@ TEST_F(BTreeFixture, stress_100k_keys) {
     const size_t key_count = 100000;
     BTree<uint32_t, size_t> tree(db->vmcache, context->getWorkerId());
     size_t row = 0;
+    size_t max_key = 0;
     for (size_t i = 0; i < key_count / 100 / 2; i++) {
-        for (size_t key = i * 100; key < (i + 1) * 100; key++)
+        for (size_t key = i * 100; key < (i + 1) * 100; key++) {
             tree.insert(key, row++);
-        for (size_t key = key_count / 2 + i * 100; key < key_count / 2 + (i + 1) * 100; key++)
+            max_key = std::max(key, max_key);
+        }
+        for (size_t key = key_count / 2 + i * 100; key < key_count / 2 + (i + 1) * 100; key++) {
             tree.insert(key, row++);
+            max_key = std::max(key, max_key);
+        }
     }
 
     for (size_t i = 0; i < key_count; i++) {
         auto it = tree.lookup(i);
         EXPECT_NE(it, tree.end());
     }
+
+    // make sure that the root node's fence keys are correct
+    SharedGuard<BTree<uint32_t, size_t>::InnerNode> tree_root(db->vmcache, tree.getRootPid(), context->getWorkerId());
+    EXPECT_EQ(tree_root->lfence, 0);
+    EXPECT_EQ(tree_root->rfence, max_key + 1);
 }
 
 TEST_F(BTreeFixture, iterator) {
@@ -137,6 +217,18 @@ TEST_F(BTreeFixture, iterator) {
         EXPECT_EQ(val.first, num_values);
         EXPECT_EQ(val.second, num_values);
         num_values++;
+    }
+    EXPECT_EQ(num_values, num_inserted_values);
+
+    // descending scan
+    num_values = 0;
+    for (auto it = --tree.end(); ; --it) {
+        num_values++;
+        auto val = *it;
+        EXPECT_EQ(val.first, num_inserted_values - num_values);
+        EXPECT_EQ(val.second, num_inserted_values - num_values);
+        if (it == tree.begin())
+            break;
     }
     EXPECT_EQ(num_values, num_inserted_values);
 }
@@ -173,4 +265,77 @@ TEST_F(BTreeFixture, range_lookup) {
             }
         }
     }
+}
+
+TEST_F(BTreeFixture, bool_values) {
+    BTree<Identifier, bool> tree(db->vmcache, context->getWorkerId());
+    std::vector<std::pair<Identifier, bool>> test_values = {
+        { 5, true },
+        { 3, true },
+        { 4, false },
+        { 7, false },
+        { 9, true },
+        { 2, false },
+        { 15, true },
+        { 14, false },
+        { 13, false },
+        { 12, true },
+        { 11, false },
+        { 10, false },
+        { 8, true },
+        { 6, false },
+        { 1, false },
+        { 0, true },
+        { 18, false },
+        { 21, true }
+    };
+    for (auto p : test_values) {
+        tree.insert(p.first, p.second);
+    }
+    for (auto p : test_values) {
+        auto it = tree.lookupExact(p.first);
+        EXPECT_NE(it, tree.end());
+        EXPECT_EQ((*it).second, p.second);
+    }
+}
+
+TEST_F(BTreeFixture, bool_values_leaf_node_split) {
+    const size_t key_count = (PAGE_SIZE * 8 / (sizeof(Identifier) * 8 + 1)) * 2;
+    BTree<Identifier, bool> tree(db->vmcache, context->getWorkerId());
+    for (size_t i = 0; i < key_count; i++) {
+        tree.insert(i, static_cast<bool>(i % 7));
+    }
+    for (size_t i = 0; i < key_count; i++) {
+        auto it = tree.lookupExact(i);
+        EXPECT_NE(it, tree.end());
+        ASSERT_EQ((*it).second, static_cast<bool>(i % 7));
+    }
+}
+
+TEST_F(BTreeFixture, insertNext) {
+    const size_t key_count = (PAGE_SIZE * 8 / (sizeof(Identifier) * 8 + 1)) * 2;
+    BTree<RowId, bool> tree(db->vmcache, context->getWorkerId());
+    for (size_t i = 0; i < key_count; i++) {
+        ASSERT_EQ(tree.insertNext(static_cast<bool>(i % 7)).key, i);
+    }
+    for (size_t i = 0; i < key_count; i++) {
+        auto it = tree.lookupExact(i);
+        EXPECT_NE(it, tree.end());
+        ASSERT_EQ((*it).second, static_cast<bool>(i % 7));
+    }
+}
+
+TEST_F(BTreeFixture, latchForUpdate) {
+    const size_t key_count = (PAGE_SIZE * 8 / (sizeof(Identifier) * 8 + 1)) * 2;
+    BTree<RowId, bool> tree(db->vmcache, context->getWorkerId());
+    for (size_t i = 0; i < key_count; i++) {
+        tree.insertNext(static_cast<bool>(i % 7));
+    }
+    for (size_t i = 0; i < key_count; i++) {
+        auto guard = tree.latchForUpdate(i);
+        EXPECT_TRUE(guard.has_value());
+        EXPECT_EQ(guard->prev_value, static_cast<bool>(i % 7));
+    }
+
+    EXPECT_FALSE(tree.latchForUpdate(key_count).has_value());
 }

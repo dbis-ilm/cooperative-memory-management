@@ -44,5 +44,5 @@ private:
     std::bitset<MAX_PIPELINE_COUNT> completed_pipelines;
     std::bitset<MAX_PIPELINE_COUNT> executing_pipelines;
     std::mutex sched_mutex;
-    bool finished;
+    std::atomic_bool finished;
 };

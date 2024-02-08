@@ -16,11 +16,14 @@ public:
     void ref(const PageId pid, bool scan, uint32_t worker_id) override;
     void notifyDropped(const PageId pid, uint32_t worker_id) override;
     void notifyTempDropped(size_t num_pages) override;
+    bool performIdleMaintenance(uint32_t worker_id) override;
     size_t getPerPageMemoryCost() const override;
     size_t getConstantMemoryCost(const size_t num_workers) const override;
     size_t getNumLatchedPages(PageId max_pid) const override;
     void printMemoryUsage() const override;
     void printStats() const override;
+    size_t getTotalEvictedPageCount() const override;
+    size_t getTotalDirtyWritePageCount() const override;
 
 private:
     std::unique_ptr<PartitionType> partition;

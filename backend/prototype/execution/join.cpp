@@ -59,8 +59,7 @@ template void JoinBuild::joinBuildKernel<uint64_t>(size_t from, size_t to);
 
 
 template <typename key_type>
-void JoinProbe::joinProbeKernel(const std::shared_ptr<Batch>& batch, std::shared_ptr<Batch>& results, uint32_t worker_id) {
-    const size_t tuple_size = output_columns.getRowSize();
+void JoinProbe::joinProbeKernel(const std::shared_ptr<Batch>& batch, IntermediateHelper& intermediates) {
     for (uint32_t row_id = 0; row_id < batch->getCurrentSize(); row_id++) {
         if (!batch->isRowValid(row_id))
             continue;
@@ -80,17 +79,7 @@ void JoinProbe::joinProbeKernel(const std::shared_ptr<Batch>& batch, std::shared
             const void* build_row = ptr + sizeof(void*);
             ptr = reinterpret_cast<const char* const*>(ptr)[0];
             if (key_val == *reinterpret_cast<const key_type*>(build_row)) {
-                uint32_t row_id;
-                char* loc = reinterpret_cast<char*>(results->addRowIfPossible(row_id));
-                if (loc == nullptr) {
-                    next_operator->push(results, worker_id);
-                    if (results.use_count() > 1) {
-                        results = std::make_shared<Batch>(vmcache, tuple_size, worker_id);
-                    } else {
-                        results->clear();
-                    }
-                    loc = reinterpret_cast<char*>(results->addRowIfPossible(row_id));
-                }
+                char* loc = intermediates.addRow();
                 for (auto& col : output_column_infos) {
                     const size_t sz = col.column.column->getValueTypeSize();
                     const char* val_ptr = reinterpret_cast<const char*>(col.from_probe ? row : build_row) + col.column.offset;
@@ -102,8 +91,7 @@ void JoinProbe::joinProbeKernel(const std::shared_ptr<Batch>& batch, std::shared
     }
 }
 
-void JoinProbe::generalJoinProbeKernel(const std::shared_ptr<Batch>& batch, std::shared_ptr<Batch>& results, size_t key_size, uint32_t worker_id) {
-    const size_t tuple_size = output_columns.getRowSize();
+void JoinProbe::generalJoinProbeKernel(const std::shared_ptr<Batch>& batch, IntermediateHelper& intermediates, size_t key_size) {
     for (uint32_t row_id = 0; row_id < batch->getCurrentSize(); row_id++) {
         if (!batch->isRowValid(row_id))
             continue;
@@ -122,17 +110,7 @@ void JoinProbe::generalJoinProbeKernel(const std::shared_ptr<Batch>& batch, std:
             const void* build_row = ptr + sizeof(void*);
             ptr = reinterpret_cast<const char* const*>(ptr)[0];
             if (memcmp(key, build_row, key_size) == 0) {
-                uint32_t row_id;
-                char* loc = reinterpret_cast<char*>(results->addRowIfPossible(row_id));
-                if (loc == nullptr) {
-                    next_operator->push(results, worker_id);
-                    if (results.use_count() > 1) {
-                        results = std::make_shared<Batch>(vmcache, tuple_size, worker_id);
-                    } else {
-                        results->clear();
-                    }
-                    loc = reinterpret_cast<char*>(results->addRowIfPossible(row_id));
-                }
+                char* loc = intermediates.addRow();
                 for (auto& col : output_column_infos) {
                     const size_t sz = col.column.column->getValueTypeSize();
                     const char* val_ptr = reinterpret_cast<const char*>(col.from_probe ? row : build_row) + col.column.offset;
@@ -144,8 +122,8 @@ void JoinProbe::generalJoinProbeKernel(const std::shared_ptr<Batch>& batch, std:
     }
 }
 
-template void JoinProbe::joinProbeKernel<uint32_t>(const std::shared_ptr<Batch>& batch, std::shared_ptr<Batch>& results, uint32_t worker_id);
-template void JoinProbe::joinProbeKernel<uint64_t>(const std::shared_ptr<Batch>& batch, std::shared_ptr<Batch>& results, uint32_t worker_id);
+template void JoinProbe::joinProbeKernel<uint32_t>(const std::shared_ptr<Batch>& batch, IntermediateHelper& intermediates);
+template void JoinProbe::joinProbeKernel<uint64_t>(const std::shared_ptr<Batch>& batch, IntermediateHelper& intermediates);
 
 std::shared_ptr<JoinBuild> JoinFactory::createBuildPipelines(std::vector<std::unique_ptr<ExecutablePipeline>>& pipelines, VMCache& vmcache, const Pipeline& input, const size_t key_size) {
     auto breaker = std::dynamic_pointer_cast<JoinBreaker>(input.breaker);

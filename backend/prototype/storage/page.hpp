@@ -6,10 +6,11 @@
 
 typedef std::atomic_uint64_t PageState;
 #define PAGE_STATE_MASK 255ull
-#define PAGE_DIRTY_MASK 256ull
 #define PAGE_DIRTY_BIT 0b100000000ull
+#define PAGE_MODIFIED_BIT 0b1000000000ull
+#define PAGE_MODIFIED(state) ((state & PAGE_MODIFIED_BIT) != 0)
 #define PAGE_STATE(state) (state & PAGE_STATE_MASK)
-#define PAGE_VERSION_OFFSET 9
+#define PAGE_VERSION_OFFSET 10
 #define PAGE_VERSION(state) (state >> PAGE_VERSION_OFFSET)
 
 #define PAGE_STATE_UNLOCKED 0

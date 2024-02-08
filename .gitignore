@@ -2,3 +2,4 @@ build*/
 r*/
 *.png
 data/
+__pycache__

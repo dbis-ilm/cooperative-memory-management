@@ -16,7 +16,8 @@ endif ()
 # ---------------------------------------------------------------------------
 add_library(prototype STATIC ${PROTOTYPE_CC})
 
-target_link_libraries(prototype gflags numa)
+target_link_libraries(prototype gflags numa dl jemalloc)
+target_include_directories(prototype PRIVATE ../libs/exmap/module)
 
 if (VTUNE_PROFILING)
     set(VTUNE_PATH "/opt/intel/oneapi/vtune/latest")

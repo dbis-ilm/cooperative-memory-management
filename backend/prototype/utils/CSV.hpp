@@ -2,6 +2,8 @@
 #include <iostream>
 #include <vector>
 
+#include "../core/types.hpp"
+
 inline uint64_t parse_int(const char* str, size_t len) {
     uint64_t result = 0;
     for (size_t i = 0; i < len; i++) {
@@ -49,23 +51,6 @@ inline int64_t parse_decimal(const char* str, size_t len, size_t decimals) {
     return negative ? -result : result;
 }
 
-// uint32_t date encoding (starting from LSB):
-// bit 0-4: day
-// bit 5-8: month
-// remaining bits: year
-
-/// decode as follows:
-//uint32_t year = date >> 9;
-//uint32_t month = (date >> 5) & 0b1111;
-//uint32_t day = date & 0b11111;
-//std::cout << year << std::endl;
-//std::cout << month << std::endl;
-//std::cout << day << std::endl;
-
-inline uint32_t encode_date(uint32_t year, uint32_t month, uint32_t day) {
-    return day | (month << 5) | (year << 9);
-}
-
 // parses a date in ISO 8601 format (YYYY-MM-DD) from string and returns it encoded according to the encoding defined above
 inline uint32_t parse_date(const char* str, size_t len) {
     if (len != 10 || str[4] != '-' || str[7] != '-')
@@ -76,22 +61,6 @@ inline uint32_t parse_date(const char* str, size_t len) {
     uint32_t day = parse_decimal(str + 8, 2, 0);
 
     return encode_date(year, month, day);
-}
-
-// uint64_t datetime encoding (starting from LSB):
-// bit 0-16: second of day
-// bit 17-21: day
-// bit 22-25: month
-// remaining bits: year
-
-/// decode as follows:
-//uint32_t year = date >> 26;
-//uint32_t month = (date >> 22) & 0b1111;
-//uint32_t day = (date >> 17) & 0b11111;
-//uint32_t second = date & 0x1ffff;
-
-inline uint64_t encode_date_time(uint32_t year, uint32_t month, uint32_t day, uint32_t hour, uint32_t minute, uint32_t second) {
-    return static_cast<uint64_t>((second + minute * 60 + hour * 3600) | (day << 17) | (month << 22)) | (static_cast<uint64_t>(year) << 26);
 }
 
 // parses a date & time in ISO 8601 format (YYYY-MM-DD hh:mm:ss) from string and returns it encoded according to the encoding defined above

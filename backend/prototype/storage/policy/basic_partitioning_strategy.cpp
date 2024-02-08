@@ -42,6 +42,11 @@ void BasicPartitioningStrategy<PartitionType>::notifyTempDropped(size_t num_page
 }
 
 template <class PartitionType>
+bool BasicPartitioningStrategy<PartitionType>::performIdleMaintenance(uint32_t worker_id) {
+    return partition->performIdleMaintenance(worker_id);
+}
+
+template <class PartitionType>
 size_t BasicPartitioningStrategy<PartitionType>::getPerPageMemoryCost() const {
     // space required in the cached_pages hash table (assumed to be sizeof(PageId) * 3 / 2 to get a load factor of ~66%)
     return PartitionType::getPerPageMemoryCost();
@@ -69,6 +74,16 @@ void BasicPartitioningStrategy<PartitionType>::printStats() const {
     partition->printEvictionStats();
     std::cout << "[vmcache] " << "Total dirty w: ";
     partition->printDirtyWriteStats();
+}
+
+template <class PartitionType>
+size_t BasicPartitioningStrategy<PartitionType>::getTotalEvictedPageCount() const {
+    return partition->getTotalEvictedPageCount();
+}
+
+template <class PartitionType>
+size_t BasicPartitioningStrategy<PartitionType>::getTotalDirtyWritePageCount() const {
+    return partition->getTotalDirtyWritePageCount();
 }
 
 INSTANTIATE_PARTITIONING_STRATEGY(BasicPartitioningStrategy)

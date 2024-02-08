@@ -5,10 +5,9 @@
 #include <iomanip>
 #include <numa.h>
 
-#include "../execution/pipeline.hpp"
-#include "../execution/pipeline_starter.hpp"
 #include "../execution/qep.hpp"
 #include "execution_context.hpp"
+#include "job.hpp"
 
 void Dispatcher::notifyAll() {
     std::unique_lock<std::mutex> lock(job_wait_mutex);
@@ -20,60 +19,42 @@ void Dispatcher::stopAll() {
     notifyAll();
 }
 
-void Dispatcher::scheduleJob(std::shared_ptr<PipelineStarterBase> starter, const ExecutionContext context) {
-    starter->initializeMorsels();
-    const size_t morsel_size = starter->getMorselSizeHint();
-    if (morsel_size >= starter->getInputSize()) {
+void Dispatcher::scheduleJob(const std::shared_ptr<Job>& job, const ExecutionContext context) {
+    assert(job.get());
+    const size_t job_size = job->getSize();
+    const double expected_time = job->getExpectedTimePerUnit() * job_size;
+    if (expected_time <= T_MAX || job_size <= job->getMinMorselSize()) {
         // if the job is small, execute it immediately within the calling thread
-        // NOTE: even if 'morsel_size >= starter->getInputSize()', we still may need to execute on multiple morsels as the job may have been split up across sockets
-        while (starter->executeNextMorsel(morsel_size, context.getSocket(), context.getWorkerId())) { }
-        starter->pipeline->getQEP()->pipelineFinished(starter->getPipelineId(), context);
+        // NOTE: we still may need to execute on multiple morsels as the job may have been split up across sockets
+        while (job->executeNextMorsel(job_size, context)) { }
+        job->finalize(context);
     } else {
         // schedule the job for execution using multiple worker threads
-        size_t slot = 0;
+        size_t s = 0;
         while (true) {
-            PipelineStarterBase* slot_value = jobs[slot].load();
-            if ((uint64_t)slot_value == SLOT_TAG_EMPTY) {
-                if (jobs[slot].compare_exchange_weak(slot_value, starter.get())) {
-                    //std::cout << "Scheduling pipeline " << starter->getPipelineId() << " in slot " << slot << std::endl;
+            Job* slot = jobs[s].load();
+            if ((uint64_t)slot == SLOT_TAG_EMPTY) {
+                if (jobs[s].compare_exchange_weak(slot, job.get())) {
                     for (auto& worker_state : worker_states)
-                        worker_state.change_mask[slot / 64].fetch_or(1ull << (slot % 64));
+                        worker_state.change_mask[s / 64].fetch_or(1ull << (s % 64));
                     notifyAll();
                     break;
                 }
             }
-            slot = (slot + 1) % JOB_SLOTS;
+            s = (s + 1) % JOB_SLOTS;
         }
     }
-}
-
-void Dispatcher::scheduleTask(std::function<void(const ExecutionContext)> task) {
-    std::lock_guard<std::mutex> guard(task_queue_mutex);
-    tasks.push(task);
-    available_tasks++;
 }
 
 void Dispatcher::finalizeSlot(size_t slot, const ExecutionContext context) {
-    PipelineStarterBase* starter = (PipelineStarterBase*)((uint64_t)jobs[slot].load() & SLOT_PTR_MASK);
-    jobs[slot].store((PipelineStarterBase*)SLOT_TAG_EMPTY);
-    starter->pipeline->getQEP()->pipelineFinished(starter->getPipelineId(), context);
+    Job* job = SLOT_PTR(jobs[slot].load());
+    jobs[slot].store((Job*)SLOT_TAG_EMPTY);
+    job->finalize(context);
 }
 
-void Dispatcher::runNext(const ExecutionContext context) {
-    // check if any tasks should be run
-    size_t n_tasks = available_tasks.load();
-    if (n_tasks > 0 && available_tasks.compare_exchange_strong(n_tasks, n_tasks - 1, std::memory_order_relaxed)) {
-        std::function<void(const ExecutionContext)> task;
-        {
-            std::lock_guard<std::mutex> guard(task_queue_mutex);
-            task = tasks.front();
-            tasks.pop();
-        }
-        task(context);
+void Dispatcher::runNext(const ExecutionContext context, bool no_wait) {
+    if (!context.isCreatedByJobManager())
         return;
-    }
-
-    // work on query execution
     WorkerState& state = worker_states[context.getWorkerId()];
     // update thread-local active slots
     for (size_t i = 0; i < JOB_SLOTS / 64; i++) {
@@ -82,18 +63,24 @@ void Dispatcher::runNext(const ExecutionContext context) {
         while (changes > 0) {
             size_t trailing_zeroes = __builtin_ctzl(changes);
             offset += trailing_zeroes;
+            assert(offset < 64);
             size_t s = i * 64 + offset;
+            assert(s < JOB_SLOTS);
             // load the global slot, initialize priority and pass value
-            PipelineStarterBase* job = jobs[s].load();
-            if (SLOT_TAG(job) == 0) { // ensure the job is still active
+            Job* slot = jobs[s].load();
+            if (SLOT_TAG(slot) == 0) { // ensure the slot is still active
+                assert(slot);
                 state.pass_values[s] = state.global_pass;
-                state.priorities[s] = job->getPriority();
+                state.priorities[s] = slot->getPriority();
                 state.sum_priorities += state.priorities[s];
-                state.T[s] = job->getMorselSizeHint(); // TODO: perhaps change this to find morsel size autonomously using a "startup phase" as described in the "Self-tuning query scheduling ..." paper
+                state.T[s] = 1.0 / slot->getExpectedTimePerUnit(); // TODO: perhaps change this to find morsel size autonomously using a "startup phase" as described in the "Self-tuning query scheduling ..." paper
                 state.active_slots.set(s);
             }
             offset += 1;
-            changes = changes >> (trailing_zeroes + 1);
+            // note: we shift two times separately here to avoid UB when trailing_zeroes == 63, as
+            //  "[...] if the value of the right operand is negative or is greater or equal to the number of bits in the promoted left operand, the behavior is undefined." - https://en.cppreference.com/w/cpp/language/operator_arithmetic
+            changes = changes >> trailing_zeroes;
+            changes = changes >> 1;
         }
     }
 
@@ -111,15 +98,15 @@ void Dispatcher::runNext(const ExecutionContext context) {
     }
 
     if (min_pass_slot != JOB_SLOTS + 1) {
-        PipelineStarterBase* job = jobs[min_pass_slot].load();
-        if (SLOT_TAG(job) == 0) {
+        Job* slot = jobs[min_pass_slot].load();
+        if (SLOT_TAG(slot) == 0) {
             auto begin = std::chrono::steady_clock::now();
             state.current_slot.store(min_pass_slot);
-            PipelineStarterBase* starter = SLOT_PTR(job);
+            Job* job = SLOT_PTR(slot);
             double throughput = state.T[min_pass_slot];
             size_t morsel_size = std::max(static_cast<size_t>(throughput * T_MAX), static_cast<size_t>(job->getMinMorselSize()));
             // TODO: implement a "shutdown phase" to try to achieve a "photo finish"?
-            if (!starter->executeNextMorsel(morsel_size, context.getSocket(), context.getWorkerId())) {
+            if (!job->executeNextMorsel(morsel_size, context)) {
                 // no more morsels to process, finalize the job
                 state.active_slots.set(min_pass_slot, false);
                 state.sum_priorities -= state.priorities[min_pass_slot];
@@ -128,7 +115,7 @@ void Dispatcher::runNext(const ExecutionContext context) {
                 if (prev_slot == FINALIZATION_MARKER) {
                     // this worker is not the finalization coordinator, but needs to deregister
                     finalizing_workers = -1;
-                } else if (jobs[min_pass_slot].compare_exchange_strong(job, (PipelineStarterBase*)((uint64_t)job | SLOT_TAG_INACTIVE))) {
+                } else if (jobs[min_pass_slot].compare_exchange_strong(slot, (Job*)((uint64_t)slot | SLOT_TAG_INACTIVE))) {
                     // this worker is now the "finalization coordinator", registering workers that are still running the job
                     finalizing_workers = 0;
                     for (auto& worker_state : worker_states) {
@@ -139,7 +126,7 @@ void Dispatcher::runNext(const ExecutionContext context) {
                         }
                     }
                 }
-                if (finalizing_workers != std::numeric_limits<int16_t>::max() && starter->finalization_counter.fetch_add(finalizing_workers) + finalizing_workers == 0) {
+                if (finalizing_workers != std::numeric_limits<int16_t>::max() && job->finalization_counter.fetch_add(finalizing_workers) + finalizing_workers == 0) {
                     finalizeSlot(min_pass_slot, context);
                 }
             } else {
@@ -157,8 +144,7 @@ void Dispatcher::runNext(const ExecutionContext context) {
                     state.active_slots.set(min_pass_slot, false);
                     state.sum_priorities -= state.priorities[min_pass_slot];
                     // slot is currently being finalized, we need to deregister
-                    const int16_t fin_counter = starter->finalization_counter.fetch_sub(1);
-                    if (fin_counter - 1 == 0) {
+                    if (job->finalization_counter.fetch_sub(1) - 1 == 0) {
                         // we were the last worker, finalize the slot
                         finalizeSlot(min_pass_slot, context);
                     }
@@ -168,23 +154,26 @@ void Dispatcher::runNext(const ExecutionContext context) {
             state.active_slots.set(min_pass_slot, false);
             state.sum_priorities -= state.priorities[min_pass_slot];
         }
-    } else if (!stop) {
-        // currently there are no active jobs, wait until new ones are scheduled/until we should stop)
-        std::unique_lock<std::mutex> lock(job_wait_mutex);
-        job_wait.wait_for(lock, std::chrono::milliseconds(1));
+    } else if (!stop && !no_wait) {
+        bool need_more_maintenance = context.getVMCache().performIdleMaintenance(context.getWorkerId());
+        if (!need_more_maintenance) {
+            // currently there are no active jobs, wait until new ones are scheduled/until we should stop
+            std::unique_lock<std::mutex> lock(job_wait_mutex);
+            job_wait.wait_for(lock, std::chrono::milliseconds(1));
+        }
     }
 }
 
 void Dispatcher::printJobStatus() const {
     std::cout << "Active jobs:" << std::endl;
     for (size_t i = 0; i < JOB_SLOTS; i++) {
-        const PipelineStarterBase* job = jobs[i].load();
-        if ((uint64_t)job == SLOT_TAG_EMPTY)
+        const Job* slot = jobs[i].load();
+        if ((uint64_t)slot == SLOT_TAG_EMPTY)
             continue;
-        const PipelineStarterBase* starter = SLOT_PTR(job);
-        std::cout << "Slot " << i << ": Pipeline " << std::setfill(' ') << std::setw(2) << starter->getPipelineId() << ", " << std::setw(8) << starter->getInputSize() << " tuples ";
+        const Job* job = SLOT_PTR(job);
+        std::cout << "Slot " << i << ": " << std::setw(8) << job->getSize() << " tuples ";
         if (SLOT_TAG(job) == SLOT_TAG_INACTIVE)
-            std::cout << " (inactive, " << starter->finalization_counter.load() << " finalizing)";
+            std::cout << " (inactive, " << job->finalization_counter.load() << " finalizing)";
         std::cout << std::endl;
     }
 }

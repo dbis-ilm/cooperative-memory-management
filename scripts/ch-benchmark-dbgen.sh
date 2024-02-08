@@ -1,4 +1,4 @@
 #!/bin/sh
-echo "Generating CH-benCHmark data with 100 warehouses..."
-mkdir -p "${1}/100"
-./chBenchmark -csv -wh 100 -pa "${1}/100"
+echo "Generating CH-benCHmark data with ${2} warehouses..."
+mkdir -p "${1}/${2}"
+./chBenchmark -csv -wh ${2} -pa "${1}/${2}"

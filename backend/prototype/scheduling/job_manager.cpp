@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <numa.h>
+#include <sys/prctl.h>
 
 #include "execution_context.hpp"
 
@@ -10,13 +11,14 @@
 #endif
 
 void JobManager::workerThread(const int tid, const ExecutionContext context) {
-#ifdef VTUNE_PROFILING
     const static char* name_base = "Worker    ";
     char name[11];
     memcpy(name, name_base, 11);
     name[7] = '0' + static_cast<char>((tid / 100) % 10);
     name[8] = '0' + static_cast<char>((tid / 10) % 10);
     name[9] = '0' + static_cast<char>(tid % 10);
+    prctl(PR_SET_NAME, name);
+#ifdef VTUNE_PROFILING
     __itt_thread_set_name(name);
 #endif
     // set CPU affinity
@@ -32,22 +34,26 @@ void JobManager::workerThread(const int tid, const ExecutionContext context) {
     }
 }
 
-JobManager::JobManager(uint64_t num_threads) {
+JobManager::JobManager(uint64_t num_threads, DB& db) {
     // start worker threads
-    const uint64_t num_available_threads = static_cast<uint64_t>(numa_num_task_cpus());
-    if (num_threads == 0 || num_threads > num_available_threads) {
-        num_threads = num_available_threads;
-    }
     int t = 0;
     uint32_t worker_id = 0;
     dispatcher = std::make_unique<Dispatcher>(num_threads);
     for (size_t i = 0; i < num_threads; i++) {
         while (numa_bitmask_isbitset(numa_all_cpus_ptr, t) != 1)
             t++;
-        threads.emplace_back(workerThread, t, ExecutionContext(*this, numa_node_of_cpu(t), worker_id++));
+        threads.emplace_back(workerThread, t, ExecutionContext(*this, db, numa_node_of_cpu(t), worker_id++));
         t++;
     }
     std::cout << "Using " << num_threads << " threads" << std::endl;
+}
+
+uint64_t JobManager::configureNumThreads(uint64_t num_threads) {
+    const uint64_t num_available_threads = static_cast<uint64_t>(numa_num_task_cpus());
+    if (num_threads == 0 || num_threads > num_available_threads) {
+        num_threads = num_available_threads;
+    }
+    return num_threads;
 }
 
 void JobManager::stop() {

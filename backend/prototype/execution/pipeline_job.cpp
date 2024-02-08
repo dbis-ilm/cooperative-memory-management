@@ -1,6 +1,9 @@
-#include "pipeline_starter.hpp"
+#include "pipeline_job.hpp"
 
 #include <numa.h>
+
+#include "pipeline_starter.hpp"
+#include "qep.hpp"
 
 #ifdef VTUNE_PROFILING
 #include <ittnotify.h>
@@ -36,11 +39,11 @@ static __itt_string_handle* itt_handle_morsel[] = {
 };
 #endif
 
-void PipelineStarterBase::initializeMorsels() {
+PipelineJob::PipelineJob(const std::shared_ptr<PipelineStarterBase>& starter) : starter(starter) {
     const int numa_node_count = numa_num_configured_nodes();
     const int available_numa_node_count = numa_bitmask_weight(numa_all_nodes_ptr);
     assert(numa_node_count <= static_cast<int>(MAX_NUMA_NODES));
-    const size_t row_count = getInputSize();
+    const size_t row_count = starter->getInputSize();
     const size_t rows_per_node = row_count / available_numa_node_count;
     int consecutive_node_id = 0;
     for (int i = 0; i < numa_node_count; i++) {
@@ -55,7 +58,7 @@ void PipelineStarterBase::initializeMorsels() {
     }
 }
 
-bool PipelineStarterBase::executeNextMorsel(size_t morsel_size, size_t socket, uint32_t worker_id) {
+bool PipelineJob::executeNextMorsel(size_t morsel_size, const ExecutionContext context) {
     bool got_job = false;
     bool found_candidate = true;
     size_t m = 0;
@@ -63,7 +66,7 @@ bool PipelineStarterBase::executeNextMorsel(size_t morsel_size, size_t socket, u
     while (found_candidate) {
         found_candidate = false;
         uint8_t remaining_sockets = (0x1 << numa_num_configured_nodes()) - 1;
-        socket_candidate = socket;
+        socket_candidate = context.getSocket();
         while (remaining_sockets != 0) {
             remaining_sockets &= ~(0x1 << socket_candidate);
             m = next_row[socket_candidate].load();
@@ -88,11 +91,27 @@ bool PipelineStarterBase::executeNextMorsel(size_t morsel_size, size_t socket, u
             __itt_task_begin(itt_domain, __itt_null, __itt_null, itt_handle_morsel[4 * 20 + socket]);
         }
 #endif
-        execute(m, to, worker_id);
+        starter->execute(m, to, context.getWorkerId());
 #ifdef VTUNE_PROFILING
         __itt_task_end(itt_domain);
 #endif
         return true;
     }
     return false;
+}
+
+void PipelineJob::finalize(const ExecutionContext context) {
+    starter->pipeline->getQEP()->pipelineFinished(starter->getPipelineId(), context);
+}
+
+size_t PipelineJob::getSize() const {
+    return starter->getInputSize();
+}
+
+double PipelineJob::getExpectedTimePerUnit() const {
+    return starter->getExpectedTimePerUnit();
+}
+
+size_t PipelineJob::getMinMorselSize() const {
+    return starter->getMinMorselSize();
 }

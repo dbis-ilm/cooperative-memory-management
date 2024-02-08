@@ -53,16 +53,17 @@ void QEP::pipelineFinished(size_t id, const ExecutionContext context) {
             }
         }
     }
-    for (size_t i = 0; i < MAX_PIPELINE_COUNT; i++)
+    for (size_t i = 0; i < MAX_PIPELINE_COUNT; i++) {
         if (pipelines_to_execute.test(i))
             pipelines[i]->startExecution(this, context);
+    }
 }
 
 void QEP::waitForExecution(const ExecutionContext context, const VMCache& vmcache, bool print_status) const {
     const auto status_frequency = std::chrono::seconds(1);
     auto last_status_time = std::chrono::steady_clock::now();
     while (!finished) {
-        std::this_thread::sleep_for(std::chrono::microseconds(10));
+        context.getDispatcher().runNext(context, true);
         auto now = std::chrono::steady_clock::now();
         if (print_status && (now - last_status_time) > status_frequency) {
             context.getDispatcher().printJobStatus();

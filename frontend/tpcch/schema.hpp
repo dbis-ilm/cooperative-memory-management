@@ -109,12 +109,12 @@
 #define H_DATA_CID 7
 
 // NEWORDER
-// NO_O_ID INTEGER (Composite PRIMARY KEY)
-#define NO_O_ID_CID 0
 // NO_D_ID TINYINT (Composite PRIMARY KEY)
-#define NO_D_ID_CID 1
+#define NO_D_ID_CID 0
 // NO_W_ID INTEGER (Composite PRIMARY KEY)
-#define NO_W_ID_CID 2
+#define NO_W_ID_CID 1
+// NO_O_ID INTEGER (Composite PRIMARY KEY)
+#define NO_O_ID_CID 2
 
 // ORDER
 // O_D_ID TINYINT (Composite PRIMARY KEY)

@@ -60,6 +60,11 @@ size_t DataTempPartitioningStrategy<PartitionType>::getNumLatchedPages(PageId ma
 }
 
 template <class PartitionType>
+bool DataTempPartitioningStrategy<PartitionType>::performIdleMaintenance(uint32_t worker_id) {
+    return partitions[0]->performIdleMaintenance(worker_id);
+}
+
+template <class PartitionType>
 void DataTempPartitioningStrategy<PartitionType>::printMemoryUsage() const {
     std::cout << "[vmcache] " << "Data: ";
     partitions[0]->printMemoryUsage();
@@ -79,5 +84,16 @@ void DataTempPartitioningStrategy<PartitionType>::printStats() const {
     std::cout << "[vmcache] " << "Temp dirty w: ";
     partitions[1]->printDirtyWriteStats();
 }
+
+template <class PartitionType>
+size_t DataTempPartitioningStrategy<PartitionType>::getTotalEvictedPageCount() const {
+    return partitions[0]->getTotalEvictedPageCount() + partitions[1]->getTotalEvictedPageCount();
+}
+
+template <class PartitionType>
+size_t DataTempPartitioningStrategy<PartitionType>::getTotalDirtyWritePageCount() const {
+    return partitions[0]->getTotalDirtyWritePageCount() + partitions[1]->getTotalDirtyWritePageCount();
+}
+
 
 INSTANTIATE_PARTITIONING_STRATEGY(DataTempPartitioningStrategy)

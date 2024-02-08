@@ -2,14 +2,18 @@
 
 #include <algorithm>
 
+#include "aggregation.hpp"
 #include "index_scan.hpp"
+#include "index_update.hpp"
 #include "join.hpp"
 #include "operator.hpp"
-#include "pipeline_starter.hpp"
 #include "pipeline_breaker.hpp"
+#include "pipeline_job.hpp"
+#include "pipeline_starter.hpp"
 #include "qep.hpp"
 #include "scan.hpp"
 #include "sort.hpp"
+#include "temporary_column.hpp"
 
 void Pipeline::addOperator(const std::shared_ptr<OperatorBase>& op) {
     if (last_operator == nullptr) {
@@ -50,9 +54,23 @@ std::shared_ptr<JoinBreaker> Pipeline::addJoinBreaker(VMCache& vmcache, const Ex
     return breaker;
 }
 
+std::shared_ptr<AggregationBreaker> Pipeline::addAggregationBreaker(VMCache& vmcache, const size_t key_size, const ExecutionContext context) {
+    BatchDescription output_desc(std::vector<NamedColumn>(current_columns.getColumns()));
+    std::shared_ptr<AggregationBreaker> breaker = std::make_shared<AggregationBreaker>(vmcache, output_desc, key_size, context.getWorkerCount());
+    addBreaker(breaker);
+    return breaker;
+}
+
 std::shared_ptr<SortBreaker> Pipeline::addSortBreaker(const std::vector<NamedColumn>& sort_keys, const std::vector<Order>& sort_orders, size_t num_workers) {
     BatchDescription output_desc = BatchDescription(std::vector<NamedColumn>(current_columns.getColumns()));
     std::shared_ptr<SortBreaker> breaker = std::make_shared<SortBreaker>(output_desc, sort_keys, sort_orders, num_workers);
+    addBreaker(breaker);
+    return breaker;
+}
+
+std::shared_ptr<SortBreaker> Pipeline::addSortBreaker(std::function<int(const Row&, const Row&)>&& comp, size_t num_workers) {
+    BatchDescription output_desc = BatchDescription(std::vector<NamedColumn>(current_columns.getColumns()));
+    std::shared_ptr<SortBreaker> breaker = std::make_shared<SortBreaker>(output_desc, std::forward<std::function<int(const Row&, const Row&)>>(comp), num_workers);
     addBreaker(breaker);
     return breaker;
 }
@@ -76,6 +94,19 @@ std::shared_ptr<JoinProbe> Pipeline::addJoinProbe(VMCache& vmcache, const Pipeli
     return join_probe;
 }
 
+std::shared_ptr<AggregationOperator> Pipeline::addAggregation(VMCache& vmcache, const Pipeline& input) {
+    auto aggregation_breaker = std::dynamic_pointer_cast<AggregationBreaker>(input.breaker);
+    if (aggregation_breaker == nullptr)
+        throw std::runtime_error("Pipeline without aggregation breaker supplied as input in addAggregation()!");
+    // TODO: for now we just group by the (single) key column, but later this will have to be adjusted once we do actual aggregation
+    for (auto& col : input.current_columns.getColumns())
+        current_columns.addColumn(col.name, col.column);
+    auto aggregation = std::make_shared<AggregationOperator>(vmcache, aggregation_breaker);
+    addOperator(aggregation);
+    addDependency(input.getId());
+    return aggregation;
+}
+
 std::shared_ptr<SortOperator> Pipeline::addSort(VMCache& vmcache, const Pipeline& input) {
     auto sort_breaker = std::dynamic_pointer_cast<SortBreaker>(input.breaker);
     if (sort_breaker == nullptr)
@@ -89,51 +120,61 @@ std::shared_ptr<SortOperator> Pipeline::addSort(VMCache& vmcache, const Pipeline
     return sort;
 }
 
-ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context) : Pipeline(id) {
+ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context) : Pipeline(id) {
     for (auto& col : scan_columns)
         current_columns.addColumn(col.name, col.column);
-    addOperator(std::make_shared<ScanOperator>(db, table_name, scan_cids, std::forward<const std::vector<NamedColumn>>(scan_columns), context));
+    addOperator(std::make_shared<ScanOperator>(db, table_name, std::forward<const std::vector<NamedColumn>>(scan_columns), context));
 }
 
-ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, Identifier search_value, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context) : Pipeline(id) {
+template <size_t n>
+ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<n> search_value, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context, size_t result_limit) : Pipeline(id) {
     for (auto& col : scan_columns)
         current_columns.addColumn(col.name, col.column);
-    addOperator(std::make_shared<IndexScanOperator<1>>(db, table_name, CompositeKey<1> { search_value }, scan_cids, std::forward<const std::vector<NamedColumn>>(scan_columns), context));
+    addOperator(std::make_shared<IndexScanOperator<n>>(db, table_name, search_value, std::forward<const std::vector<NamedColumn>>(scan_columns), context, result_limit));
 }
 
-ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<2> search_value, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context) : Pipeline(id) {
+template <size_t n>
+ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<n> from_search_value, CompositeKey<n> to_search_value, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context, size_t result_limit) : Pipeline(id) {
     for (auto& col : scan_columns)
         current_columns.addColumn(col.name, col.column);
-    addOperator(std::make_shared<IndexScanOperator<2>>(db, table_name, search_value, scan_cids, std::forward<const std::vector<NamedColumn>>(scan_columns), context));
+    addOperator(std::make_shared<IndexScanOperator<n>>(db, table_name, from_search_value, to_search_value, std::forward<const std::vector<NamedColumn>>(scan_columns), context, result_limit));
 }
 
-ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<3> search_value, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context) : Pipeline(id) {
-    for (auto& col : scan_columns)
+template <size_t n>
+ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<n> search_value, const std::vector<NamedColumn>&& update_columns, const std::vector<std::function<void(void*)>>& updates, const ExecutionContext context) : Pipeline(id) {
+    for (auto& col : update_columns)
         current_columns.addColumn(col.name, col.column);
-    addOperator(std::make_shared<IndexScanOperator<3>>(db, table_name, search_value, scan_cids, std::forward<const std::vector<NamedColumn>>(scan_columns), context));
+    addOperator(std::make_shared<IndexUpdateOperator<n>>(db, table_name, search_value, std::forward<const std::vector<NamedColumn>>(update_columns), updates, context));
 }
 
-ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<4> search_value, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context) : Pipeline(id) {
-    for (auto& col : scan_columns)
+template <size_t n>
+ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<n> from_search_value, CompositeKey<n> to_search_value, const std::vector<NamedColumn>&& update_columns, const std::vector<std::function<void(void*)>>& updates, const ExecutionContext context) : Pipeline(id) {
+    for (auto& col : update_columns)
         current_columns.addColumn(col.name, col.column);
-    addOperator(std::make_shared<IndexScanOperator<4>>(db, table_name, search_value, scan_cids, std::forward<const std::vector<NamedColumn>>(scan_columns), context));
+    addOperator(std::make_shared<IndexUpdateOperator<n>>(db, table_name, from_search_value, to_search_value, std::forward<const std::vector<NamedColumn>>(update_columns), updates, context));
 }
 
-ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, CompositeKey<4> from_search_value, CompositeKey<4> to_search_value, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context) : Pipeline(id) {
-    for (auto& col : scan_columns)
-        current_columns.addColumn(col.name, col.column);
-    addOperator(std::make_shared<IndexScanOperator<4>>(db, table_name, from_search_value, to_search_value, scan_cids, std::forward<const std::vector<NamedColumn>>(scan_columns), context));
-}
+#define INSTANTIATE_COMPOSITEKEY_CONSTRUCTORS(n) \
+template ExecutablePipeline::ExecutablePipeline(size_t, DB&, const std::string&, CompositeKey<n>, const std::vector<NamedColumn>&&, const ExecutionContext, size_t); \
+template ExecutablePipeline::ExecutablePipeline(size_t, DB&, const std::string&, CompositeKey<n>, CompositeKey<n>, const std::vector<NamedColumn>&&, const ExecutionContext, size_t); \
+template ExecutablePipeline::ExecutablePipeline(size_t, DB&, const std::string&, CompositeKey<n>, const std::vector<NamedColumn>&&, const std::vector<std::function<void(void*)>>&, const ExecutionContext); \
+template ExecutablePipeline::ExecutablePipeline(size_t, DB&, const std::string&, CompositeKey<n>, CompositeKey<n>, const std::vector<NamedColumn>&&, const std::vector<std::function<void(void*)>>&, const ExecutionContext);
 
-ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, const std::vector<uint64_t>& filter_column_cids, const std::vector<Identifier>&& filter_values, const std::vector<uint64_t>& scan_cids, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context) : Pipeline(id) {
+INSTANTIATE_COMPOSITEKEY_CONSTRUCTORS(1)
+INSTANTIATE_COMPOSITEKEY_CONSTRUCTORS(2)
+INSTANTIATE_COMPOSITEKEY_CONSTRUCTORS(3)
+INSTANTIATE_COMPOSITEKEY_CONSTRUCTORS(4)
+
+ExecutablePipeline::ExecutablePipeline(size_t id, DB& db, const std::string& table_name, const std::vector<NamedColumn>&& filter_columns, const std::vector<Identifier>&& filter_values, const std::vector<NamedColumn>&& scan_columns, const ExecutionContext context) : Pipeline(id) {
     for (auto& col : scan_columns)
         current_columns.addColumn(col.name, col.column);
-    addOperator(std::make_shared<FilteringScanOperator>(db, table_name, filter_column_cids, std::forward<const std::vector<Identifier>>(filter_values), scan_cids, std::forward<const std::vector<NamedColumn>>(scan_columns), context));
+    addOperator(std::make_shared<FilteringScanOperator>(db, table_name, std::forward<const std::vector<NamedColumn>>(filter_columns), std::forward<const std::vector<Identifier>>(filter_values), std::forward<const std::vector<NamedColumn>>(scan_columns), context));
 }
 
 void ExecutablePipeline::startExecution(QEP* qep, const ExecutionContext context) {
     //std::cout << "Starting execution of pipeline " << id << std::endl;
     this->qep = qep;
     starter->pipelinePreExecutionSteps(context.getWorkerId());
-    context.getDispatcher().scheduleJob(starter, context);
+    job = std::make_shared<PipelineJob>(starter);
+    context.getDispatcher().scheduleJob(job, context);
 }

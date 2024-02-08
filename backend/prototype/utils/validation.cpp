@@ -16,7 +16,7 @@ bool validateQueryResult(const std::shared_ptr<PipelineBreakerBase>& result, std
     }
     for (auto& expected_batch : expected) {
         if (expected_batch->getRowSize() != row_size) {
-            std::cout << "Expected row size does not match result row size" << std::endl;
+            std::cout << "Expected row size (" << expected_batch->getRowSize() <<  " B) does not match result row size (" << row_size << " B)" << std::endl;
             return false;
         }
     }

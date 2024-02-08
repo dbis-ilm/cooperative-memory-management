@@ -28,7 +28,6 @@ for fname in os.listdir(search_dir):
     df = pd.DataFrame(data, columns=['elapsed time [s]', 'pid', 'action'])
 
     fig, ax = plt.subplots(1, 1)
-    df = df[df.pid < 2*10**6] # filter out temp data for now
     # see https://stackoverflow.com/questions/39753282/scatter-plot-with-single-pixel-marker-in-matplotlib for plotting each trace entry as a single pixel
     fig.set_size_inches(12, 6)
     fig.set_dpi(400.0)

@@ -5,7 +5,7 @@
 #include "../../core/units.hpp"
 
 #define ROOTPAGE_MAGIC 0xfedcba9876543210ull
-#define PERSISTENCE_VERSION 2ull
+#define PERSISTENCE_VERSION 4ull
 
 struct RootPage {
     uint64_t magic;

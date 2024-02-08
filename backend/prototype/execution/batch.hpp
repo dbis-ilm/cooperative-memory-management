@@ -8,20 +8,24 @@
 #include <vector>
 
 #include "../storage/vmcache.hpp"
-#include "temporary_column.hpp"
+#include "../core/column_base.hpp"
 
 struct NamedColumn {
     std::string name;
-    std::shared_ptr<TemporaryColumnBase> column;
+    std::shared_ptr<ColumnBase> column;
 
-    NamedColumn(const std::string& name, std::shared_ptr<TemporaryColumnBase> column) : name(name), column(column) { }
+    NamedColumn(const std::string& name, std::shared_ptr<ColumnBase> column) : name(name), column(column) { }
+
+    bool operator==(const NamedColumn& other) const {
+        return name == other.name && column == other.column;
+    }
 };
 
 struct ColumnInfo {
     size_t offset;
-    std::shared_ptr<TemporaryColumnBase> column;
+    std::shared_ptr<ColumnBase> column;
 
-    ColumnInfo(size_t offset, std::shared_ptr<TemporaryColumnBase> column) : offset(offset), column(column) { }
+    ColumnInfo(size_t offset, std::shared_ptr<ColumnBase> column) : offset(offset), column(column) { }
     ColumnInfo() : offset(0), column(nullptr) { }
 };
 
@@ -36,7 +40,7 @@ public:
     void swap(BatchDescription& other);
 
     // adds a new column and ensures that the name is unique
-    void addColumn(const std::string& pipeline_column_name, std::shared_ptr<TemporaryColumnBase> column);
+    void addColumn(const std::string& pipeline_column_name, std::shared_ptr<ColumnBase> column);
 
     const std::vector<NamedColumn>& getColumns() const { return columns; }
     ColumnInfo find(const std::string& column_name) const;
@@ -82,9 +86,9 @@ public:
             return Row(batch->getRowSize(), batch->getRow(row_id));
         }
 
-        friend bool operator==(const Iterator& a, const Iterator& b) { return &a.batch == &b.batch && a.row_id == b.row_id; }
-        friend bool operator!=(const Iterator& a, const Iterator& b) { return &a.batch != &b.batch || a.row_id != b.row_id; }
-        friend difference_type operator-(const Iterator& a, const Iterator& b) { return static_cast<difference_type>(b.row_id) - static_cast<difference_type>(a.row_id); }
+        friend bool operator==(const Iterator& a, const Iterator& b) { return a.batch == b.batch && a.row_id == b.row_id; }
+        friend bool operator!=(const Iterator& a, const Iterator& b) { return a.batch != b.batch || a.row_id != b.row_id; }
+        friend difference_type operator-(const Iterator& a, const Iterator& b) { return static_cast<difference_type>(a.row_id) - static_cast<difference_type>(b.row_id); }
         friend Iterator operator+(const Iterator& a, difference_type b) { return Iterator(*a.batch, a.row_id + b); }
         friend Iterator operator+(difference_type a, const Iterator& b) { return Iterator(*b.batch, b.row_id + a); }
         friend Iterator operator-(const Iterator& a, difference_type b) { return Iterator(*a.batch, a.row_id - b); }
@@ -142,12 +146,12 @@ public:
 
     inline void* getRow(const uint32_t row_id) {
         assert(row_id < current_size);
-        return data + (max_size >> 3) + row_id * row_size;
+        return data + ((max_size + 7) / 8) + row_id * row_size;
     }
 
     inline const void* getRow(const uint32_t row_id) const {
         assert(row_id < current_size);
-        return data + (max_size >> 3) + row_id * row_size;
+        return data + ((max_size + 7) / 8) + row_id * row_size;
     }
 
     inline void* getLastRow() {
@@ -175,10 +179,36 @@ public:
     uint32_t getCurrentSize() const { return current_size; }
     size_t getValidRowCount() const { return valid_row_count; }
     bool empty() const { return valid_row_count == 0; }
-    bool dense() const { return valid_row_count + first_valid_row_id == current_size; }
+    bool full() const { return current_size == max_size; }
+    bool dense() const { return valid_row_count + first_valid_row_id == current_size || valid_row_count == 0; }
+
+    // appends as many rows as possible from 'other' to 'this', returns the number of appended rows; the appended rows are taken from the back and removed from 'other'; to be able to copy all appended rows at once, invalid rows may be appended too
+    size_t append(std::shared_ptr<Batch> other) {
+        assert(getRowSize() == other->getRowSize());
+        size_t num_rows = std::min(max_size - current_size, other->getCurrentSize());
+        uint32_t first_row_id = current_size;
+        uint32_t other_first_row_id = other->getCurrentSize() - num_rows;
+        void* dest = data + ((max_size + 7) / 8) + first_row_id * row_size;
+        void* src = other->getRow(other_first_row_id);
+
+        for (uint32_t i = 0; i < num_rows; i++) {
+            if (other->isRowValid(other_first_row_id + i)) {
+                uint32_t row_id = first_row_id + i;
+                data[row_id / 8] |= 0x1ull << (row_id % 8);
+                valid_row_count++;
+                row_id = other_first_row_id + i;
+                other->data[row_id / 8] &= ~(0x1 << row_id % 8);
+                other->valid_row_count--;
+            }
+        }
+        memcpy(dest, src, num_rows * row_size);
+        current_size += num_rows;
+        other->current_size -= num_rows;
+        return num_rows;
+    }
 
     void clear() {
-        std::memset(data, 0, max_size >> 3);
+        std::memset(data, 0, (max_size + 7) / 8);
         valid_row_count = 0;
         first_valid_row_id = 0;
         current_size = 0;

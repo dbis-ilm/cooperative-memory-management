@@ -99,11 +99,11 @@ public:
     void consumeBatches(std::vector<std::shared_ptr<Batch>>&, uint32_t) override { }
 
     size_t getInputSize() const override { return batches.size(); }
-    size_t getMorselSizeHint() const override { return 1; } // morsel size = 1 batch
+    double getExpectedTimePerUnit() const override { return 0.02; } // morsel size = 1 batch
 
 private:
     void allocateHT(uint32_t worker_id) {
-        this->worker_id = worker_id; // TODO: this is not a good solution, as the worker that allocates the hash table will not necessarily be the one that frees it later. Find a proper solution
+        this->worker_id = worker_id; // TODO: remove unneeded worker_id for temporary allocations
         // get input tuples
         input->consumeBatches(batches, worker_id);
         // allocate hash table
@@ -147,7 +147,7 @@ public:
     void consumeBatches(std::vector<std::shared_ptr<Batch>>&, uint32_t) override { }
 
     size_t getInputSize() const override { return (1ull << output->ht_bits); }
-    size_t getMorselSizeHint() const override { return 128ull * 1024ull; } // initialize 1 MiB blocks (as each ht bucket is 8B wide)
+    double getExpectedTimePerUnit() const override { return 0.02 / 128.0 / 1024.0; } // initialize 1 MiB blocks (as each ht bucket is 8B wide)
 
 private:
     std::shared_ptr<JoinBuild> output;
@@ -177,28 +177,24 @@ public:
     }
 
     void push(std::shared_ptr<Batch> batch, uint32_t worker_id) override {
-        const size_t tuple_size = output_columns.getRowSize();
-        std::shared_ptr<Batch> results = std::make_shared<Batch>(vmcache, tuple_size, worker_id);
+        IntermediateHelper intermediates(vmcache, output_columns.getRowSize(), next_operator, worker_id);
         switch (build->key_size) {
             case 4:
-                joinProbeKernel<uint32_t>(batch, results, worker_id);
+                joinProbeKernel<uint32_t>(batch, intermediates);
                 break;
             case 8:
-                joinProbeKernel<uint64_t>(batch, results, worker_id);
+                joinProbeKernel<uint64_t>(batch, intermediates);
                 break;
             default:
-                generalJoinProbeKernel(batch, results, build->key_size, worker_id);
+                generalJoinProbeKernel(batch, intermediates, build->key_size);
                 break;
         }
-        // push the last batch
-        if (results->getCurrentSize() > 0)
-            next_operator->push(results, worker_id);
     }
 
 private:
     template <typename key_type>
-    void joinProbeKernel(const std::shared_ptr<Batch>& batch, std::shared_ptr<Batch>& results, uint32_t worker_id);
-    void generalJoinProbeKernel(const std::shared_ptr<Batch>& batch, std::shared_ptr<Batch>& results, size_t key_size, uint32_t worker_id);
+    void joinProbeKernel(const std::shared_ptr<Batch>& batch, IntermediateHelper& intermediates);
+    void generalJoinProbeKernel(const std::shared_ptr<Batch>& batch, IntermediateHelper& intermediates, size_t key_size);
 
     VMCache& vmcache;
     std::shared_ptr<JoinBuild> build;

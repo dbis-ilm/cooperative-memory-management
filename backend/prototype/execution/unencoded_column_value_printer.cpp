@@ -1,38 +1,24 @@
-#include "temporary_column.hpp"
+#include "unencoded_column_value_printer.hpp"
 
 #include <iomanip>
 
+#include "table_column.hpp"
+#include "temporary_column.hpp"
 #include "../core/types.hpp"
+
 
 std::ostream& operator<<(std::ostream& os, const ColumnValuePrinter& printer) {
     return printer.print(os);
 }
 
 template <class ValueType>
-class UnencodedColumnValuePrinter : public ColumnValuePrinter {
-public:
-    UnencodedColumnValuePrinter(const char* value, size_t width) : value(*reinterpret_cast<const ValueType*>(value)), width(width) {}
-
-private:
-    std::ostream& print(std::ostream& os) const override;
-
-    const ValueType& value;
-    size_t width;
-};
-
-template <class ValueType>
 std::ostream& UnencodedColumnValuePrinter<ValueType>::print(std::ostream& os) const {
     return os << std::setw(width) << std::setfill(' ') << value;
 }
 
-template <class ValueType>
-std::unique_ptr<ColumnValuePrinter> UnencodedTemporaryColumn<ValueType>::print(const char* value, size_t width) const {
-    return std::make_unique<UnencodedColumnValuePrinter<ValueType>>(value, width);
-}
-
 #define INSTANTIATE_PRINTER(type) \
 template std::ostream& UnencodedColumnValuePrinter<type>::print(std::ostream& os) const; \
-template std::unique_ptr<ColumnValuePrinter> UnencodedTemporaryColumn<type>::print(const char* value, size_t width) const;
+template std::unique_ptr<ColumnValuePrinter> UnencodedTypedColumn<type>::print(const char* value, size_t width) const;
 
 INSTANTIATE_PRINTER(void*)
 INSTANTIATE_PRINTER(Identifier)
@@ -65,4 +51,7 @@ INSTANTIATE_PRINTER(Char<22>)
 INSTANTIATE_PRINTER(Char<23>)
 INSTANTIATE_PRINTER(Char<24>)
 INSTANTIATE_PRINTER(Char<25>)
+INSTANTIATE_PRINTER(Char<50>)
+INSTANTIATE_PRINTER(Char<500>)
+INSTANTIATE_PRINTER(Date)
 INSTANTIATE_PRINTER(DateTime)

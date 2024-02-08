@@ -13,8 +13,10 @@ class SortBreaker : public DefaultBreaker {
 
 public:
     SortBreaker(BatchDescription& batch_description, const std::vector<NamedColumn>& sort_keys, const std::vector<Order>& sort_orders, size_t num_workers);
+    SortBreaker(BatchDescription& batch_description, std::function<int(const Row&, const Row&)>&& comp, size_t num_workers);
 
     void push(std::shared_ptr<Batch> batch, uint32_t worker_id) override;
+    void consumeBatches(std::vector<std::shared_ptr<Batch>>& target, uint32_t worker_id) override;
 
 private:
     std::vector<NamedColumn> sort_keys;
@@ -33,7 +35,7 @@ public:
 
     size_t getInputSize() const override { return 1; }
 
-    size_t getMorselSizeHint() const override { return 1; }
+    double getExpectedTimePerUnit() const override { return 0.01; }
 
     void pipelinePreExecutionSteps(uint32_t worker_id) override {
         breaker->consumeBatches(batches, worker_id);

@@ -9,8 +9,7 @@
 #include <vector>
 
 class ExecutionContext;
-class PipelineStarterBase;
-class QEP;
+class Job;
 
 const size_t JOB_SLOTS = 128; // TODO: need to figure out a way to avoid deadlocks in QEP::pipelineFinished() when all slots are being used -> just have a queue behind a mutex to keep track of pipelines that exceed the available slots?!
 const size_t MAX_NUMA_NODES = 8;
@@ -23,7 +22,7 @@ const double ALPHA = 0.8; // weight for adjusting throughput estimates
 #define SLOT_TAG_EMPTY (2ull << 57)
 #define SLOT_PTR_MASK ((1ull << 57) - 1ull)
 #define SLOT_TAG_MASK (~SLOT_PTR_MASK)
-#define SLOT_PTR(slot) (PipelineStarterBase*)((uint64_t)slot & SLOT_PTR_MASK)
+#define SLOT_PTR(slot) (Job*)((uint64_t)slot & SLOT_PTR_MASK)
 #define SLOT_TAG(slot) ((uint64_t)slot & SLOT_TAG_MASK)
 
 struct WorkerState {
@@ -55,16 +54,16 @@ struct WorkerState {
 
 struct Dispatcher {
     friend class JobManager;
+    friend class QEP;
 
 public:
-    Dispatcher(uint64_t num_workers) : stop(false), worker_states(num_workers), available_tasks(0) {
+    Dispatcher(uint64_t num_workers) : stop(false), worker_states(num_workers) {
         for (auto& slot : jobs)
-            slot = (PipelineStarterBase*)SLOT_TAG_EMPTY;
+            slot = (Job*)SLOT_TAG_EMPTY;
     }
 
     // for job management
-    void scheduleJob(std::shared_ptr<PipelineStarterBase> starter, const ExecutionContext context);
-    void scheduleTask(std::function<void(const ExecutionContext)> task);
+    void scheduleJob(const std::shared_ptr<Job>& job, const ExecutionContext context);
     void printJobStatus() const;
 
 private:
@@ -73,14 +72,11 @@ private:
     void finalizeSlot(size_t slot, const ExecutionContext context);
 
     // for worker threads
-    void runNext(const ExecutionContext context);
+    void runNext(const ExecutionContext context, bool no_wait = false);
 
     std::mutex job_wait_mutex;
     std::condition_variable job_wait;
     std::atomic<bool> stop;
-    std::atomic<PipelineStarterBase*> jobs[JOB_SLOTS];
+    std::atomic<Job*> jobs[JOB_SLOTS];
     std::vector<WorkerState> worker_states;
-    std::queue<std::function<void(const ExecutionContext)>> tasks;
-    std::mutex task_queue_mutex;
-    std::atomic_size_t available_tasks;
 };
