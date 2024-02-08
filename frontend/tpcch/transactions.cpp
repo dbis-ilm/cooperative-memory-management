@@ -366,7 +366,7 @@ void runPMCustomerUpdate(DB& db, Identifier w_id, Identifier d_id, Identifier c_
             size_t copy_size = std::min(c_data_prefix_str.size(), 500ul);
             size_t rem = 500 - copy_size;
             if (rem > 0)
-                memcpy(reinterpret_cast<char*>(data) + copy_size, data, rem);
+                memmove(reinterpret_cast<char*>(data) + copy_size, data, rem);
             memcpy(data, c_data_prefix_str.c_str(), copy_size);
         });
     }

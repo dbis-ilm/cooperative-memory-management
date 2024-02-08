@@ -1,11 +1,12 @@
 import json
 import os
+import parameters
 
 class ExperimentConfiguration(object):
     def __init__(self, **kwargs):
         self.numactl_args = kwargs.get('numactl_args', '-c 0')
         self.binary = kwargs.get('binary', 'frontend/tpcch')
-        self.database_path = kwargs.get('database_path', '/data2/tpcch-100.db') # TODO maybe there should be no default value for this?
+        self.database_path = kwargs.get('database_path', parameters.disks['NVMe'])
         self.dataset_path = kwargs.get('dataset_path', 'data/tpcch/100') # TODO default?
         self.warmup = kwargs.get('warmup', 15)
         self.benchmark = kwargs.get('benchmark', 120)

@@ -29,8 +29,7 @@ if __name__ == '__main__':
                 shutil.copy(first_db_path, db_path)
             else:
                 print(f'Importing database to {db_path} ...')
-                # Note: We are using only a single thread for importing the database since multi-threaded CSV import got broken at some point - TODO: Fix this
-                result = subprocess.run(['numactl', '-c', '0', 'build/frontend/tpcch', db_path, '--ch_path=data/tpcch/100', '--import_only', '--parallel=1'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf8')
+                result = subprocess.run(['numactl', '-c', '0', 'build/frontend/tpcch', db_path, '--ch_path=data/tpcch/100', '--import_only'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf8')
                 with open(os.path.join(args.path, 'import_stdout'), 'w') as file:
                     file.write(result.stdout)
                 with open(os.path.join(args.path, 'import_stderr'), 'w') as file:
@@ -48,4 +47,14 @@ if __name__ == '__main__':
     working_set.run_experiments(args.path)
     print('Running traditional-cooperative comparison experiments ...')
     trad_coop.run_experiments(args.path)
+    print('Done running experiments')
+
+    # create figures
+    print('Creating figures ...')
+    figure_path = os.path.join(args.path, 'figures')
+    if not os.path.exists(figure_path):
+        os.mkdir(figure_path)
+    scalability.create_figures(args.path, figure_path)
+    working_set.create_figures(args.path, figure_path)
+    trad_coop.create_figures(args.path, figure_path)
     print('Done')

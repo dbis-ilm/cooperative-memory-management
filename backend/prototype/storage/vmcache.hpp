@@ -93,7 +93,9 @@ public:
         checkPid(pid);
         const uint64_t s = page_states[pid].load();
         const uint64_t dirty_bit = dirty_writeback ? PAGE_DIRTY_BIT : PAGE_MODIFIED_BIT;
-        page_states[pid].store(((s & ~PAGE_STATE_MASK) + (1ull << PAGE_VERSION_OFFSET)) | PAGE_STATE_UNLOCKED | dirty_bit, std::memory_order_relaxed);
+        const uint64_t new_s = ((s + (1ull << PAGE_VERSION_OFFSET)) & ~PAGE_STATE_MASK) | PAGE_STATE_UNLOCKED | dirty_bit;
+        assert(PAGE_STATE(new_s) == PAGE_STATE_UNLOCKED);
+        page_states[pid].store(new_s, std::memory_order_release);
         // update statistics
         if (dirty_writeback && (s & PAGE_DIRTY_BIT) == 0) // page was not already dirty
             num_dirty_pages++;

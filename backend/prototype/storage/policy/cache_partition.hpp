@@ -147,7 +147,7 @@ protected:
     }
 
     inline void markEvicted(const PageId pid, __attribute__((unused)) uint32_t worker_id) {
-        vmcache.page_states[pid].store(((vmcache.page_states[pid].load() & ~PAGE_STATE_MASK) + (1ull << PAGE_VERSION_OFFSET)) | PAGE_STATE_EVICTED, std::memory_order_relaxed);
+        vmcache.page_states[pid].store(((vmcache.page_states[pid].load() & ~PAGE_STATE_MASK) + (1ull << PAGE_VERSION_OFFSET)) | PAGE_STATE_EVICTED, std::memory_order_release);
 #ifdef COLLECT_CACHE_TRACES
         tracer.trace(CacheAction::Evict, pid, worker_id);
 #endif

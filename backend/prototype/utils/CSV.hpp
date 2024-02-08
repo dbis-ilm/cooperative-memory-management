@@ -106,6 +106,12 @@ struct ParseTypeDescription {
 };
 
 size_t parse_csv_chunk(std::istream& csv, size_t offset, std::streamoff length, const char sep, std::vector<ParseTypeDescription> types, std::vector<void*> destinations) {
+#ifndef NDEBUG
+    assert(types.size() == destinations.size());
+    for (size_t i = 0; i < types.size(); ++i)
+        assert(destinations[i] != nullptr || types[i].type == ParseType::Skip);
+#endif
+
     if (offset != 0) {
         csv.seekg(offset - 1, std::ios::beg);
         length++;

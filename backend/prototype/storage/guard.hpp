@@ -81,7 +81,7 @@ struct OptimisticGuard {
                     uint64_t new_state = (state & ~PAGE_STATE_MASK) | PAGE_STATE_LOCKED;
                     if (ps.compare_exchange_strong(state, new_state)) {
                         vmcache.fault(pid, PAGE_MODIFIED(state), false, worker_id);
-                        ps.store((state & ~PAGE_STATE_MASK) | PAGE_STATE_UNLOCKED);
+                        ps.store((state & ~PAGE_STATE_MASK) | PAGE_STATE_UNLOCKED, std::memory_order_release);
                     }
                     break;
                 }
@@ -216,10 +216,10 @@ struct ExclusiveGuard {
         data = reinterpret_cast<T*>(vmcache.fixExclusive(pid, worker_id));
     }
 
-    explicit ExclusiveGuard(OptimisticGuard<T>&& other) : vmcache(other.vmcache), pid(other.pid), data(other.data) {
+    explicit ExclusiveGuard(OptimisticGuard<T>&& other) : vmcache(other.vmcache), pid(MOVED), data(nullptr) {
         assert(other.pid != MOVED);
         for (size_t repeat_counter = 0; ; repeat_counter++) {
-            PageState& ps = vmcache.getPageState(pid);
+            PageState& ps = vmcache.getPageState(other.pid);
             uint64_t state = ps.load();
             if (PAGE_VERSION(state) != PAGE_VERSION(other.version))
                 throw OLRestartException();
@@ -227,6 +227,10 @@ struct ExclusiveGuard {
             if (s == PAGE_STATE_UNLOCKED || s == PAGE_STATE_MARKED) {
                 if (ps.compare_exchange_strong(state, (state & ~PAGE_STATE_MASK) | PAGE_STATE_LOCKED)) {
                     // note: there is no need to call VMCache::fault() here, as we are upgrading from an optimistic latch, which will have already faulted the page
+                    pid = other.pid;
+                    data = other.data;
+                    other.pid = MOVED;
+                    other.data = nullptr;
                     return;
                 }
             }

@@ -9,16 +9,17 @@
 #include "prototype/scheduling/execution_context.hpp"
 
 void DBTestFixture::SetUp() {
-    std::stringstream path_str;
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> dist(0, 4096);
-    path_str << "test" << dist(gen) << ".db";
-    path = path_str.str();
-    lock_path = path + ".lock";
-    lock_fd = open(lock_path.c_str(), O_CREAT);
-    while (flock(lock_fd, LOCK_EX) != 0) {
-        close(lock_fd);
+    lock_fd = -1;
+    while (lock_fd == -1 || flock(lock_fd, LOCK_EX) != 0) {
+        if (lock_fd != -1)
+            close(lock_fd);
+        std::stringstream path_str;
+        path_str << "test" << dist(gen) << ".db";
+        path = path_str.str();
+        lock_path = path + ".lock";
         lock_fd = open(lock_path.c_str(), O_CREAT);
     }
     // delete pre-existing test database
@@ -28,9 +29,9 @@ void DBTestFixture::SetUp() {
             throw std::runtime_error("Failed to delete existing test database");
     }
     uint64_t num_workers = JobManager::configureNumThreads(1);
-    db = std::make_shared<DB>(16ull * 1024ull * 1024ull * 1024ull, path, false, false, false, false, num_workers, false);
+    db = std::make_shared<DB>(16ull * 1024ull * 1024ull * 1024ull, path, false, false, false, false, num_workers + 1, false);
     job_manager = std::make_shared<JobManager>(num_workers, *db);
-    context = std::make_shared<ExecutionContext>(*job_manager, *db, 0, 0, false);
+    context = std::make_shared<ExecutionContext>(*job_manager, *db, 0, num_workers, false);
 }
 
 void DBTestFixture::TearDown() {

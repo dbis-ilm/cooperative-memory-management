@@ -39,6 +39,8 @@ After having built the binaries and configuring ``parameters.py`` properly, you 
 python3 scripts/run_experiments.py <result directory>
 ```
 
+This will also automatically generate the figures for the *Cooperative Memory Management for Cost-Efficient HTAP* paper in ``<result directory>/figures``.
+
 ## License
 
 MIT

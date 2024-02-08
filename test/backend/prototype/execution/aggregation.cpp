@@ -37,9 +37,6 @@ TEST_F(AggregationFixture, distinct) {
     pipelines.push_back(std::make_unique<ExecutablePipeline>(pipelines.size(), *db, "T1", std::vector<NamedColumn>({ t1c1 }), *context));
     pipelines.back()->addAggregationBreaker(db->vmcache, sizeof(Identifier), *context);
 
-    // init & build hash table
-    //auto join_build = JoinFactory::createBuildPipelines(pipelines, db->vmcache, *pipelines[0], t1c1.column->getValueTypeSize());
-
     // aggregate partition-wise
     pipelines.push_back(std::make_unique<ExecutablePipeline>(pipelines.size()));
     pipelines.back()->addAggregation(db->vmcache, *pipelines[0]);

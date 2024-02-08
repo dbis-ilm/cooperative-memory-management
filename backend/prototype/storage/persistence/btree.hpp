@@ -13,8 +13,6 @@ template <typename KeyType>
 struct BTreeNodeHeader {
     size_t n_keys;
     size_t level;
-    KeyType lfence;
-    KeyType rfence;
 };
 
 template <typename KeyType, size_t size>
@@ -87,7 +85,6 @@ struct BTreeLeafNode : BTreeNodeHeader<KeyType> {
         memcpy(this->values + this->n_keys, right->values, right->n_keys * sizeof(ValueType));
         this->n_keys += right->n_keys;
         this->next = right->next;
-        this->rfence = right->rfence;
         // update parent node
         parent->remove(i + 1);
         return true;
@@ -107,6 +104,7 @@ struct BTreeLeafNode<KeyType, bool, size> : BTreeNodeHeader<KeyType> {
     inline KeyType split(ExclusiveGuard<BTreeLeafNode>& new_leaf) {
         size_t l_n_keys = (this->n_keys + 7) / 16 * 8; // split at a multiple of 8 to simplify copying values
         // after split: this = left node, new_leaf = right node
+        assert(l_n_keys < this->n_keys);
         new_leaf->n_keys = this->n_keys - l_n_keys;
         this->n_keys = l_n_keys;
         memcpy(new_leaf->keys, this->keys + l_n_keys, new_leaf->n_keys * sizeof(KeyType));
@@ -237,13 +235,12 @@ public:
                 ensurePageLoaded();
                 if (i == 0) {
                     // find previous leaf
-                    KeyType key = page->lfence - 1;
+                    KeyType key = page->keys[0] - 1;
                     PageId prev_pid = page.pid;
                     for (size_t repeat_counter = 0; ; repeat_counter++) {
                         try {
-                            PageId stack[tree->max_stack_size];
-                            uint8_t stack_size = 0;
-                            page = SharedGuard<LeafNode>(page.vmcache, tree->traverse(key, stack, stack_size), worker_id);
+                            OptimisticGuard<InnerNode> parent_o(page.vmcache, tree->root_pid, worker_id);
+                            page = SharedGuard<LeafNode>(page.vmcache, tree->traverse(key, parent_o), worker_id);
                             break;
                         } catch (const OLRestartException&) { }
                     }
@@ -309,15 +306,11 @@ public:
         root_pid = root.pid;
         root->n_keys = 0;
         root->level = 1;
-        root->lfence = std::numeric_limits<KeyType>::max();
-        root->rfence = std::numeric_limits<KeyType>::min();
         AllocGuard<LeafNode> leaf(vmcache, worker_id);
         root->children[0] = leaf.pid;
         leaf->n_keys = 0;
         leaf->next = INVALID_PAGE_ID;
         leaf->level = 0;
-        leaf->lfence = std::numeric_limits<KeyType>::max();
-        leaf->rfence = std::numeric_limits<KeyType>::min();
     }
 
     Iterator begin() const {
@@ -345,42 +338,129 @@ public:
     }
 
     std::pair<KeyType, KeyType> keyRange() const {
-        SharedGuard<InnerNode> root(vmcache, root_pid, worker_id);
-        return std::make_pair(root->lfence, root->rfence);
+        if (this->begin() == this->end()) {
+            return std::make_pair<KeyType, KeyType>({}, {});
+        } else {
+            SharedGuard<LeafNode> last_leaf(vmcache, getLastLeaf(), worker_id);
+            return std::make_pair((*this->begin()).first, last_leaf->keys[last_leaf->n_keys - 1] + 1);
+        }
     }
 
-    const size_t max_stack_size = 16;
-    // TODO: stack should hold OptimisticGuards that are revalidated on entering this method?!
-    PageId traverse(KeyType key, PageId* stack, uint8_t& stack_size) const {
-        OptimisticGuard<InnerNode> current(vmcache, stack_size == 0 ? root_pid : stack[--stack_size], worker_id);
-        if (key < current->lfence || key >= current->rfence) { // restart
-            stack_size = 0;
-            current = OptimisticGuard<InnerNode>(vmcache, root_pid, worker_id);
-        }
+    PageId traverse(KeyType key, OptimisticGuard<InnerNode>& parent) const {
         // find the correct leaf node
         while (true) {
-            size_t l = lowerBound<KeyType>(current->keys, current->n_keys, key);
-            if (l < current->n_keys && current->keys[l] == key)
+            assert(parent->n_keys <= InnerNode::capacity);
+            size_t l = lowerBound<KeyType>(parent->keys, parent->n_keys, key);
+            if (l < parent->n_keys && parent->keys[l] == key)
                 l++;
-            assert(l <= current->n_keys);
-            assert(stack_size < max_stack_size);
-            stack[stack_size++] = current.pid;
-            if (current->level == 1) {
-                return current->children[l];
+            assert(l <= parent->n_keys);
+            if (parent->level == 1) {
+                return parent->children[l];
             } else {
-                current = OptimisticGuard<InnerNode>(vmcache, current->children[l], worker_id);
+#ifndef NDEBUG
+                auto prev_level = parent->level;
+#endif
+                PageId pid = parent->children[l];
+                parent.checkVersionAndRestart();
+                parent = OptimisticGuard<InnerNode>(vmcache, pid, worker_id);
+                assert(parent->level == prev_level - 1);
             }
+        }
+    }
+
+    void trySplit(ExclusiveGuard<LeafNode>&& leaf, ExclusiveGuard<InnerNode>&& parent, KeyType key) {
+        assert(parent->level == 1);
+        if (parent->n_keys >= InnerNode::capacity) {
+            // have to split parent, restart from root
+            PageId parent_pid = parent.pid;
+            leaf.release();
+            parent.release();
+            ensureSpace(parent_pid, key);
+        } else {
+            // split leaf node
+            ExclusiveGuard<LeafNode> new_leaf(vmcache, vmcache.allocatePage(), worker_id);
+            new_leaf->level = 0;
+            new_leaf->next = leaf->next;
+            leaf->next = new_leaf.pid;
+            auto separator = leaf->split(new_leaf);
+            insertIntoInner(parent, separator, new_leaf.pid);
+        }
+    }
+
+    void trySplit(ExclusiveGuard<InnerNode>&& inner, ExclusiveGuard<InnerNode>&& parent, KeyType key) {
+        if (inner.pid == root_pid) {
+            ExclusiveGuard<InnerNode> new_inner(vmcache, vmcache.allocatePage(), worker_id);
+            memcpy(new_inner.data, inner.data, PAGE_SIZE);
+            inner->children[0] = new_inner.pid;
+            inner->n_keys = 0;
+            inner->level = new_inner->level + 1;
+            parent = std::move(inner); // new root page with 'new_inner' as the only child
+            inner = std::move(new_inner);
+        }
+
+        if (parent->n_keys >= InnerNode::capacity) {
+            // have to split parent, restart from root
+            PageId parent_pid = parent.pid;
+            inner.release();
+            parent.release();
+            ensureSpace(parent_pid, key);
+        } else {
+            // split inner node
+            inner->n_keys = (InnerNode::capacity + 1) / 2;
+            // inner = left node; new_inner = right node
+            ExclusiveGuard<InnerNode> new_inner(vmcache, vmcache.allocatePage(), worker_id);
+            new_inner->n_keys = InnerNode::capacity / 2 - 1;
+            new_inner->level = inner->level;
+            assert(inner->n_keys + new_inner->n_keys == InnerNode::capacity - 1);
+            memcpy(new_inner->keys, inner->keys + inner->n_keys + 1, new_inner->n_keys * sizeof(KeyType));
+            memcpy(new_inner->children, inner->children + inner->n_keys + 1, (new_inner->n_keys + 1) * sizeof(PageId));
+            const KeyType split_key = inner->keys[inner->n_keys];
+            insertIntoInner(parent, split_key, new_inner.pid);
+        }
+    }
+
+    void ensureSpace(PageId pid, KeyType key) {
+        for (size_t repeat_counter = 0; ; repeat_counter++) {
+            try {
+                PageId parent_pid = ExclusiveGuard<InnerNode>::MOVED;
+                OptimisticGuard<InnerNode> current(vmcache, root_pid, worker_id);
+                while (current.pid != pid && current->level != 1) {
+                    size_t l = lowerBound<KeyType>(current->keys, current->n_keys, key);
+                    if (l < current->n_keys && current->keys[l] == key)
+                        l++;
+                    assert(l <= current->n_keys);
+                    parent_pid = current.pid;
+                    PageId new_current_pid = current->children[l];
+                    current.checkVersionAndRestart();
+                    current = OptimisticGuard<InnerNode>(vmcache, new_current_pid, worker_id);
+                }
+                if (current.pid == pid) {
+                    if (current->n_keys < InnerNode::capacity)
+                        return; // split already happened concurrently
+                    ExclusiveGuard<InnerNode> parent = parent_pid == ExclusiveGuard<InnerNode>::MOVED ? ExclusiveGuard<InnerNode>(vmcache) : ExclusiveGuard<InnerNode>(vmcache, parent_pid, worker_id);
+                    ExclusiveGuard<InnerNode> node(std::move(current));
+                    trySplit(std::move(node), std::move(parent), key);
+                }
+                return;
+            } catch(const OLRestartException&) {}
         }
     }
 
     void insert(KeyType key, ValueType value) {
         for (size_t repeat_counter = 0; ; repeat_counter++) {
             try {
-                PageId stack[max_stack_size];
-                uint8_t stack_size = 0;
-                ExclusiveGuard<LeafNode> leaf(vmcache, traverse(key, stack, stack_size), worker_id);
-                insertIntoLeaf(std::move(leaf), stack, stack_size, key, value);
-                return;
+                OptimisticGuard<InnerNode> parent_o(vmcache, root_pid, worker_id);
+                OptimisticGuard<LeafNode> leaf_o(vmcache, traverse(key, parent_o), worker_id);
+                if (leaf_o->n_keys < LeafNode::capacity) {
+                    ExclusiveGuard<LeafNode> leaf(std::move(leaf_o));
+                    parent_o.release();
+                    insertIntoLeaf(leaf, key, value);
+                    return; // done
+                }
+                ExclusiveGuard<InnerNode> parent(std::move(parent_o));
+                ExclusiveGuard<LeafNode> leaf(std::move(leaf_o));
+                trySplit(std::move(leaf), std::move(parent), key);
+                // restart after split
             } catch (const OLRestartException&) { }
         }
     }
@@ -388,9 +468,9 @@ public:
     std::optional<UpdateGuard> latchForUpdate(KeyType key) {
         for (size_t repeat_counter = 0; ; repeat_counter++) {
             try {
-                PageId stack[max_stack_size];
-                uint8_t stack_size = 0;
-                ExclusiveGuard<LeafNode> leaf(vmcache, traverse(key, stack, stack_size), worker_id);
+                OptimisticGuard<InnerNode> parent_o(vmcache, root_pid, worker_id);
+                ExclusiveGuard<LeafNode> leaf(vmcache, traverse(key, parent_o), worker_id);
+                parent_o.release();
                 size_t l = lowerBound<KeyType>(leaf->keys, leaf->n_keys, key);
                 if (l < leaf->n_keys && leaf->keys[l] == key)
                     return std::optional<UpdateGuard>(std::in_place, std::move(leaf), leaf->get(l), l);
@@ -405,17 +485,24 @@ public:
     InsertGuard insertNext(ValueType value) {
         for (size_t repeat_counter = 0; ; repeat_counter++) {
             try {
-                PageId stack[max_stack_size];
-                uint8_t stack_size = 0;
                 KeyType key = std::numeric_limits<KeyType>::max();
-                ExclusiveGuard<LeafNode> leaf(vmcache, traverse(key, stack, stack_size), worker_id);
-                if (leaf->n_keys == 0) {
+                OptimisticGuard<InnerNode> parent_o(vmcache, root_pid, worker_id);
+                OptimisticGuard<LeafNode> leaf_o(vmcache, traverse(key, parent_o), worker_id);
+                if (leaf_o->n_keys == 0) {
                     key = {};
                 } else {
-                    key = leaf->keys[leaf->n_keys - 1] + 1;
+                    key = leaf_o->keys[leaf_o->n_keys - 1] + 1;
                 }
-                leaf = insertIntoLeaf(std::move(leaf), stack, stack_size, key, value);
-                return InsertGuard(std::move(leaf), key);
+                if (leaf_o->n_keys < LeafNode::capacity) {
+                    ExclusiveGuard<LeafNode> leaf(std::move(leaf_o));
+                    parent_o.release();
+                    insertIntoLeaf(leaf, key, value);
+                    return InsertGuard(std::move(leaf), key); // done
+                }
+                ExclusiveGuard<InnerNode> parent(std::move(parent_o));
+                ExclusiveGuard<LeafNode> leaf(std::move(leaf_o));
+                trySplit(std::move(leaf), std::move(parent), key);
+                // restart after split
             } catch (const OLRestartException&) { }
         }
     }
@@ -424,9 +511,6 @@ public:
         for (size_t repeat_counter = 0; ; repeat_counter++) {
             try {
                 OptimisticGuard<InnerNode> parent(vmcache, root_pid, worker_id);
-                if (key < parent->lfence || key >= parent->rfence) { // key not in tree
-                    return false;
-                }
                 size_t leaf_pos;
                 PageId leaf_pid;
                 while (true) {
@@ -473,9 +557,9 @@ public:
     Iterator lookup(KeyType key) {
         for (size_t repeat_counter = 0; ; repeat_counter++) {
             try {
-                PageId stack[max_stack_size];
-                uint8_t stack_size = 0;
-                SharedGuard<LeafNode> leaf(vmcache, traverse(key, stack, stack_size), worker_id);
+                OptimisticGuard<InnerNode> parent_o(vmcache, root_pid, worker_id);
+                SharedGuard<LeafNode> leaf(vmcache, traverse(key, parent_o), worker_id);
+                parent_o.release();
                 if ((leaf->n_keys == 0 || key > leaf->keys[leaf->n_keys - 1]) && leaf->next == INVALID_PAGE_ID)
                     return end();
                 // search the key within the leaf node
@@ -497,9 +581,9 @@ public:
     std::optional<ValueType> lookupValue(KeyType key) {
         for (size_t repeat_counter = 0; ; repeat_counter++) {
             try {
-                PageId stack[max_stack_size];
-                uint8_t stack_size = 0;
-                OptimisticGuard<LeafNode> leaf(vmcache, traverse(key, stack, stack_size), worker_id);
+                OptimisticGuard<InnerNode> parent_o(vmcache, root_pid, worker_id);
+                OptimisticGuard<LeafNode> leaf(vmcache, traverse(key, parent_o), worker_id);
+                parent_o.release();
                 if ((leaf->n_keys == 0 || key > leaf->keys[leaf->n_keys - 1]) && leaf->next == INVALID_PAGE_ID)
                     return std::nullopt;
                 // search the key within the leaf node
@@ -516,76 +600,21 @@ public:
     }
 
 private:
-    ExclusiveGuard<LeafNode> insertIntoLeaf(ExclusiveGuard<LeafNode> leaf, PageId* stack, size_t stack_size, KeyType key, ValueType value) {
+    void insertIntoLeaf(ExclusiveGuard<LeafNode>& leaf, KeyType key, ValueType value) {
+        assert(leaf->n_keys < LeafNode::capacity);
         // search the key within the leaf node
         size_t l = lowerBound<KeyType>(leaf->keys, leaf->n_keys, key);
         if (l < leaf->n_keys && leaf->keys[l] == key) {
             throw std::runtime_error("Key already exists!");
         } else {
-            // insert new key
-            bool fence_key_update = false;
-            if (key < leaf->lfence) {
-                leaf->lfence = key;
-                fence_key_update = true;
-            }
-            if (key >= leaf->rfence) {
-                leaf->rfence = key + 1;
-                fence_key_update = true;
-            }
-            if (leaf->n_keys == LeafNode::capacity) {
-                // split leaf node
-                ExclusiveGuard<LeafNode> new_leaf(vmcache, vmcache.allocatePage(), worker_id);
-                new_leaf->level = 0;
-                new_leaf->next = leaf->next;
-                leaf->next = new_leaf.pid;
-                auto separator = leaf->split(new_leaf);
-                leaf->rfence = separator;
-                new_leaf->lfence = separator;
-                new_leaf->rfence = leaf->rfence;
-                assert(stack_size > 0);
-                insertIntoInner(stack[stack_size - 1], stack, stack_size - 1, separator, new_leaf.pid, leaf->lfence, new_leaf->rfence);
-                // setup for actual key insertion
-                if (l > leaf->n_keys) {
-                    // key goes into the new leaf node
-                    l -= leaf->n_keys;
-                    std::swap(new_leaf, leaf);
-                }
-            }
-            if (fence_key_update) {
-                // propagate fence key update down the stack
-                size_t stack_i = stack_size;
-                do {
-                    PageId pid = stack[--stack_i];
-                    ExclusiveGuard<InnerNode> inner(vmcache, pid, worker_id);
-                    fence_key_update = false;
-                    if (leaf->lfence < inner->lfence) {
-                        inner->lfence = leaf->lfence;
-                        fence_key_update = true;
-                    }
-                    if (leaf->rfence > inner->rfence) {
-                        inner->rfence = leaf->rfence;
-                        fence_key_update = true;
-                    }
-                } while (stack_i != 0 && fence_key_update);
-            }
             // actual insert
             leaf->insert(l, key, value);
-            return leaf;
         }
     }
 
-    void insertIntoInner(PageId inner_pid, PageId* stack, size_t stack_size, KeyType key, PageId child, KeyType lfence, KeyType rfence) {
-        ExclusiveGuard<InnerNode> inner(vmcache, inner_pid, worker_id);
+    void insertIntoInner(ExclusiveGuard<InnerNode>& inner, KeyType key, PageId child) {
+        assert(inner->n_keys < InnerNode::capacity);
         size_t l = lowerBound(inner->keys, inner->n_keys, key);
-        if (inner->n_keys == InnerNode::capacity) {
-            ExclusiveGuard<InnerNode> new_inner = splitInner(inner, stack, stack_size);
-            // setup for actual key insertion
-            if (l > inner->n_keys) {
-                // key goes into the new inner node
-                l -= inner->n_keys + 1;
-                std::swap(new_inner, inner);
-            }
-        }
         // insert 'key' into inner node
         for (size_t i = inner->n_keys; i > l; i--) {
             inner->keys[i] = inner->keys[i - 1];
@@ -596,48 +625,6 @@ private:
         inner->keys[l] = key;
         inner->children[l + 1] = child;
         inner->n_keys++;
-        if (inner->lfence > lfence)
-            inner->lfence = lfence;
-        if (inner->rfence < rfence)
-            inner->rfence = rfence;
-    }
-
-    ExclusiveGuard<InnerNode> splitInner(ExclusiveGuard<InnerNode>& inner, PageId* stack, size_t stack_size) {
-        inner->n_keys = (InnerNode::capacity + 1) / 2;
-        // inner = left node; new_inner = right node
-        ExclusiveGuard<InnerNode> new_inner(vmcache, vmcache.allocatePage(), worker_id);
-        new_inner->n_keys = InnerNode::capacity / 2 - 1;
-        new_inner->level = inner->level;
-        new_inner->lfence = inner->keys[inner->n_keys];
-        new_inner->rfence = inner->rfence;
-        inner->rfence = inner->keys[inner->n_keys];
-        assert(inner->n_keys + new_inner->n_keys == InnerNode::capacity - 1);
-        memcpy(new_inner->keys, inner->keys + inner->n_keys + 1, new_inner->n_keys * sizeof(KeyType));
-        memcpy(new_inner->children, inner->children + inner->n_keys + 1, (new_inner->n_keys + 1) * sizeof(PageId));
-        const KeyType split_key = inner->keys[inner->n_keys];
-        if (stack_size == 0) {
-            // we just split the root page, so we need to create a new 'inner', transfer its contents to 'inner' and update it to point only to 'inner' and 'new_inner'
-            PageId root_pid = inner.pid;
-            // copy 'root' to new 'inner'
-            inner = AllocGuard<InnerNode>(vmcache, worker_id);
-            ExclusiveGuard<InnerNode> root(vmcache, root_pid, worker_id);
-            inner->level = root->level;
-            inner->n_keys = root->n_keys;
-            memcpy(inner->keys, root->keys, inner->n_keys * sizeof(KeyType));
-            memcpy(inner->children, root->children, (inner->n_keys + 1) * sizeof(PageId));
-            // recreate 'root'
-            root->n_keys = 1;
-            root->level = new_inner->level + 1;
-            root->lfence = inner->lfence;
-            root->rfence = new_inner->rfence;
-            root->keys[0] = split_key;
-            root->children[0] = inner.pid;
-            root->children[1] = new_inner.pid;
-        } else {
-            PageId parent = stack[--stack_size];
-            insertIntoInner(parent, stack, stack_size, split_key, new_inner.pid, inner->lfence, new_inner->rfence);
-        }
-        return new_inner;
     }
 
     PageId getFirstLeaf() const {

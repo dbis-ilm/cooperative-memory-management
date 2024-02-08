@@ -89,6 +89,8 @@ VMCache::VMCache(uint64_t max_size, uint64_t virtual_pages, const std::string& p
         memory = reinterpret_cast<char*>(mmap(0, virtual_pages * PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, exmap_fd, 0));
     } else {
         memory = reinterpret_cast<char*>(mmap(0, virtual_pages * PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE, -1, 0));
+        if (memory == MAP_FAILED)
+            throw std::runtime_error("Failed to create anonymous memory mapping for vmcache");
         madvise(memory, virtual_pages * PAGE_SIZE, MADV_DONTNEED | MADV_NOHUGEPAGE);
     }
     this->partitioning_strategy->setVMCache(this, num_workers);
@@ -227,7 +229,7 @@ void VMCache::evictAll(bool check_residency, uint32_t worker_id) {
                     madvise(toPointer(pid), PAGE_SIZE, MADV_DONTNEED);
                 }
                 partitioning_strategy->notifyDropped(pid, worker_id);
-                page_states[pid].store(((page_states[pid].load() & ~PAGE_STATE_MASK) + (1ull << PAGE_VERSION_OFFSET)) | PAGE_STATE_EVICTED, std::memory_order_relaxed);
+                page_states[pid].store(((page_states[pid].load() & ~PAGE_STATE_MASK) + (1ull << PAGE_VERSION_OFFSET)) | PAGE_STATE_EVICTED, std::memory_order_release);
                 evicted_pages++;
             }
         }

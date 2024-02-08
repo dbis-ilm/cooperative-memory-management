@@ -84,11 +84,6 @@ TEST_F(BTreeFixture, lookup) {
     it = tree.lookup(413);
     EXPECT_EQ(it, tree.end());
 
-    // make sure that the root node's fence keys are correct
-    SharedGuard<BTree<uint32_t, size_t>::InnerNode> tree_root(db->vmcache, tree.getRootPid(), context->getWorkerId());
-    EXPECT_EQ(tree_root->lfence, 1);
-    EXPECT_EQ(tree_root->rfence, 413);
-
     // test lookupValue()
     EXPECT_EQ(tree.lookupValue(413), std::nullopt);
     EXPECT_EQ(tree.lookupValue(1).value(), 4);
@@ -192,11 +187,6 @@ TEST_F(BTreeFixture, stress_100k_keys) {
         auto it = tree.lookup(i);
         EXPECT_NE(it, tree.end());
     }
-
-    // make sure that the root node's fence keys are correct
-    SharedGuard<BTree<uint32_t, size_t>::InnerNode> tree_root(db->vmcache, tree.getRootPid(), context->getWorkerId());
-    EXPECT_EQ(tree_root->lfence, 0);
-    EXPECT_EQ(tree_root->rfence, max_key + 1);
 }
 
 TEST_F(BTreeFixture, iterator) {
@@ -338,4 +328,23 @@ TEST_F(BTreeFixture, latchForUpdate) {
     }
 
     EXPECT_FALSE(tree.latchForUpdate(key_count).has_value());
+}
+
+TEST_F(BTreeFixture, keyRange) {
+    BTree<RowId, bool> tree(db->vmcache, context->getWorkerId());
+    auto range = tree.keyRange();
+    ASSERT_EQ(range.first, 0);
+    ASSERT_EQ(range.second, 0);
+
+    ASSERT_EQ(tree.insertNext(true).key, 0);
+    range = tree.keyRange();
+    ASSERT_EQ(range.first, 0);
+    ASSERT_EQ(range.second, 1);
+
+    for (size_t i = 0; i < 3; i++) {
+        tree.insertNext(true);
+    }
+    range = tree.keyRange();
+    ASSERT_EQ(range.first, 0);
+    ASSERT_EQ(range.second, 4);
 }
