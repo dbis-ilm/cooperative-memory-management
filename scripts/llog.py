@@ -1,5 +1,4 @@
 # %% ipynb
-# analyze latency log by plotting average transaction latencies in 'AVG_WINDOW' windows over time
 from analysis import load_latencies
 import os
 import numpy as np
@@ -12,7 +11,20 @@ ablation_labels = {
     '+idlewriters': '+ idle writers',
     'full': '+ both',
 }
+txns = sorted(['P', 'D', 'N', 'O', 'S'])
+txn_labels = {
+    'D': 'Delivery',
+    'N': 'NewOrder',
+    'O': 'OrderStatus',
+    'P': 'Payment',
+    'S': 'StockSelect',
+}
+paradigm_labels = {
+    'traditional': 'Traditional',
+    'cooperative': 'Cooperative'
+}
 
+# %%
 # load data
 ablations = {}
 path = '../results/trad-coop/NVMe/none/'
@@ -36,19 +48,6 @@ for ablation in [subdir for subdir in os.listdir(path) if 'ablation' in subdir] 
         ablations[name][paradigm] = df
 
 # %%
-txn_labels = {
-    'D': 'Delivery',
-    'N': 'NewOrder',
-    'O': 'OrderStatus',
-    'P': 'Payment',
-    'S': 'StockSelect',
-}
-paradigm_labels = {
-    'traditional': 'Traditional',
-    'cooperative': 'Cooperative'
-}
-
-txns = sorted(['P', 'D', 'N', 'O', 'S'])
 fig, axs = plt.subplots(len(ablations), 2, sharex=True, sharey=True)
 min = 10**-1.9
 max = 1000
@@ -71,22 +70,27 @@ for i, (ablation, dfs) in enumerate(ablations.items()):
         axs[i][x].set_ylabel(None)
         for lat in df[df.measurement == 'alloc'].time:
             axs[i][x].axvline(lat / 1000, color='black', zorder=-1.0, ymin=0.95, ymax=1)
-        if False: # TODO: add back support for plotting latencies over time
-            # plot average transaction latencies in 'AVG_WINDOW' windows over time
-            AVG_WINDOW = 0.5 if df['elapsed'].max() < 200 else 5
-            x = np.arange(df['elapsed'].min(), df['elapsed'].max() - AVG_WINDOW, AVG_WINDOW)
-            for t in txns:
-                y = []
-                sub_df = df[df.measurement == t]
-                for start in x:
-                    y.append(sub_df[sub_df['elapsed'].between(start, start + AVG_WINDOW)]['time'].mean() / 1000)
-                axs[i][x].plot(x, y, label=t)
-                axs[i][x].legend()
-                axs[i][x].set_xlabel('Elapsed time [s]')
-                axs[i][x].set_ylabel('Average latency [ms]')
-                axs[i][x].set_yscale('log')
+
 fig.set_size_inches(12, 0.75 * len(ablations))
 handles, labels = axs[0][0].get_legend_handles_labels()
 fig.legend(handles, [txn_labels[t] for t in labels], ncol=5, loc='lower center')
 fig.tight_layout(rect=(0.0, 0.05, 1.0, 1.0))
 fig.subplots_adjust(wspace=0.05, hspace=0)
+
+# %%
+# analyze latency log by plotting average transaction latencies in 'AVG_WINDOW' windows over time
+df, _ = load_latencies(os.path.join('../results/trad-coop/NVMe/q09/'))
+# plot average transaction latencies in 'AVG_WINDOW' windows over time
+AVG_WINDOW = 0.5 if df['elapsed'].max() < 200 else 5
+x = np.arange(df['elapsed'].min(), df['elapsed'].max() - AVG_WINDOW, AVG_WINDOW)
+fig, ax = plt.subplots(1, 1)
+for t in txns:
+    y = []
+    sub_df = df[df.measurement == t]
+    for start in x:
+        y.append(sub_df[sub_df['elapsed'].between(start, start + AVG_WINDOW)]['time'].mean() / 1000)
+    ax.plot(x, y, label=t)
+ax.legend()
+ax.set_xlabel('Elapsed time [s]')
+ax.set_ylabel('Average latency [ms]')
+ax.set_yscale('log')

@@ -1,10 +1,8 @@
 # Cooperative Memory Management for Table and Temporary Data
 
-This is a prototype system for evaluating cooperative memory management for database management systems and comparing it to traditional memory management. The system and experimental results are presented in our paper submitted (**currently under review**) to the 28th International Conference on Extending Database Technology (EDBT '25):
+This is a prototype system for evaluating cooperative memory management (CMM) for database management systems and comparing it to traditional memory management.
 
-Robert Lasch, Thomas Legler, Norman May, Bernhard Scheirle, Kai-Uwe Sattler: *Cooperative Memory Management for Cost-Efficient HTAP*
-
-An initial discussion of the idea and preliminary experimental results can also be found in our [paper](https://doi.org/10.1145/3596225.3596230) published in the 1st Workshop on Simplicity in Management of Data (SiMoD):
+An initial discussion of the CMM idea and preliminary experimental results can be found in our [paper](https://doi.org/10.1145/3596225.3596230) published in the 1st Workshop on Simplicity in Management of Data (SiMoD):
 
 Robert Lasch, Thomas Legler, Norman May, Bernhard Scheirle, Kai-Uwe Sattler: *Cooperative Memory Management for Table and Temporary Data*
 

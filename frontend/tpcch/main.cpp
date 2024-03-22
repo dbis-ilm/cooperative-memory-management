@@ -51,6 +51,7 @@ DEFINE_uint64(oltp, 64, "Number of concurrent OLTP streams to run");
 DEFINE_string(olap, "simulated", "The type of OLAP workload to run; options are 'simulated', 'q06', 'q09', 'mixed', and 'none'; 'mixed' alternates between running q06 and q09; defaults to 'simulated'");
 DEFINE_uint64(olap_interval, 30, "Interval in seconds to run analytical queries at (i.e., an analytical query is started every 'olap_interval' seconds); a new query is only started after the previous one has finished, so specifying an interval that is smaller than the query's actual execution time (or 0) will result in queries being executed back-to-back and can be used to measure maximum analytical throughput; the default value is 30 seconds");
 DEFINE_uint64(olap_sim_duration, 5, "Duration in seconds for the simulated OLAP query; defaults to 5 seconds");
+DEFINE_uint64(olap_sim_size_pages, 227090, "Number of pages to allocate for the simulated OLAP query; the default value is 227090 pages, which is equal to roughly half of the total number of usable pages with a 2 GB memory limit");
 DEFINE_bool(olap_stdout, false, "Print OLAP query results to the standard output");
 DEFINE_uint64(warmup, 10, "Warmup time in seconds");
 DEFINE_uint64(benchmark, 60, "Benchmark time in seconds");
@@ -578,7 +579,7 @@ void OLAPStream(std::atomic<BenchmarkState>& state, std::atomic_size_t& active_s
             qep = nullptr;
         } else if (current_query == "simulated") {
             log << "Simulating OLAP query..." << std::endl;
-            const size_t num_pages = std::min(db.vmcache.getMaxPhysicalPages() * 50ull / 100ull, 4ull * 1024ull * 1024ull * 1024ull / PAGE_SIZE);
+            const size_t num_pages = FLAGS_olap_sim_size_pages;
             const size_t batch_size = num_pages;
             size_t allocated_pages = 0;
             std::vector<char*> pages;

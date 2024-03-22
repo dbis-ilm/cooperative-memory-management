@@ -23,7 +23,7 @@ ablations = ['-inmemory', '+writeback', '+idlewriters', '+evictiontarget']
 
 def run_trad_coop_experiment(basepath: str, mode: str, config: ExperimentConfiguration):
     result_path = os.path.join(basepath, mode)
-    if mode == 'traditional':
+    if mode == 'traditional' or mode == 'largetrad':
         config.partitioning_strategy = 'partitioned'
         if config.olap == 'q06':
             config.partitioned_num_temp_pages = 2000
@@ -32,6 +32,8 @@ def run_trad_coop_experiment(basepath: str, mode: str, config: ExperimentConfigu
         else:
             # reserve temporary memory pages equal to half of the memory limit rounded up to the nearest multiple of 100 pages
             config.partitioned_num_temp_pages = (config.memory_limit // 2 // 4096 + 99) // 100 * 100
+        if mode == 'largetrad': # increase memory limit by the memory capacity reserved for temporary memory, such that TMM uses as much buffer pool memory as CMM could maximally use at the original memory limit
+            config.memory_limit += config.partitioned_num_temp_pages * 4096
     elif mode == 'cooperative':
         config.partitioning_strategy = 'basic'
         config.partitioned_num_temp_pages = None
@@ -46,7 +48,6 @@ def run_experiments(result_path: str):
     config.benchmark = 120
     config.oltp = parameters.oltp_threads
     config.parallel = parameters.physical_cores
-    config.memory_limit = parameters.comparison_memory_limit
     basepath = os.path.join(result_path, 'trad-coop')
     if not os.path.exists(basepath):
         os.mkdir(basepath)
@@ -89,7 +90,8 @@ def run_experiments(result_path: str):
             config.no_dirty_writeback = False
             config.no_async_flush = False
             config.no_eviction_target = False
-            for mode in ['traditional', 'cooperative']:
+            for mode in ['traditional', 'cooperative', 'largetrad']:
+                config.memory_limit = parameters.comparison_memory_limit
                 try:
                     run_trad_coop_experiment(workload_path, mode, config)
                 except:
@@ -121,7 +123,7 @@ def run_experiments(result_path: str):
                 else:
                     raise RuntimeError(f'Unknown ablation {ablation}')
 
-                for mode in ['traditional', 'cooperative']:
+                for mode in ['traditional', 'cooperative']: # do not run ablations for largetrad
                     try:
                         run_trad_coop_experiment(ablation_path, mode, config)
                     except:
@@ -139,7 +141,7 @@ def create_figures(result_path: str, figure_path: str):
     overlays = {}
     benchmark_time = 0
     for olap in OLAP_CONFIGS:
-        for paradigm in ['traditional', 'cooperative']:
+        for paradigm in ['largetrad', 'traditional', 'cooperative']:
             file = os.path.join(result_path, 'trad-coop', DISK, olap, paradigm, 'stats.csv')
             name = os.path.dirname(file[len(result_path) + 1:]).replace('/', '-')
             df, config, overlay_cols = load_stats(os.path.dirname(file))
@@ -154,7 +156,7 @@ def create_figures(result_path: str, figure_path: str):
             y = np.append(y, [y[-1]])
         return x, y
 
-    fig, axs = plt.subplots(len(OLAP_CONFIGS), 2, squeeze=False)
+    fig, axs = plt.subplots(len(OLAP_CONFIGS), 3, squeeze=False)
     c_sub = 0
     for c, (name, df) in enumerate(dfs.items()):
         stackplot_cols = ['temp_pages', 'data_pages']
@@ -165,7 +167,7 @@ def create_figures(result_path: str, figure_path: str):
             stackplot_cols.append('dirty_data_pages')
             stackplot_labels.append('Buffer pool memory (dirty)')
             stackplot_colors.append(parameters.plot_colors['bufferpool_dirty'])
-        ax = axs[(c - c_sub) // 2][(c - c_sub) % 2]
+        ax = axs[(c - c_sub) // 3][(c - c_sub) % 3]
         ax.stackplot(df['elapsed'], df[stackplot_cols].T, labels=stackplot_labels, colors=stackplot_colors)
         ax.stackplot(df['elapsed'], df[['temp_in_use']].T, labels=['Used temporary memory'], colors=[parameters.plot_colors['temporary_in_use']])
         # throughput plot prerequisites
@@ -177,7 +179,7 @@ def create_figures(result_path: str, figure_path: str):
         ax2.set_ylabel('Throughput [MtpmC]')  # we already handled the x-label with ax1
         # for 'cooperative' plots, plot 'traditional' throughput in the background for comparison, and vice-versa
         OTHER_THROUGHPUT_WINDOW = THROUGHPUT_WINDOW
-        other_name = name.replace('cooperative', 'traditional') if 'cooperative' in name else name.replace('traditional', 'cooperative')
+        other_name = name.replace('cooperative', 'traditional') if 'cooperative' in name else name.replace('traditional', 'cooperative').replace('largetrad', 'cooperative')
         other_overlay_x = np.arange(df['elapsed'].min(), df['elapsed'].max() - OTHER_THROUGHPUT_WINDOW, OTHER_THROUGHPUT_WINDOW)
         other_overlay_y = []
         for start in other_overlay_x:
@@ -194,11 +196,13 @@ def create_figures(result_path: str, figure_path: str):
         ax.set_xlabel('Elapsed time [s]')
         ax.set_ylabel('Data Volume [MB]')
         if c == 0:
-            ax.set_title('Traditional')
+            ax.set_title('Traditional (Coop. Capacity)')
         elif c == 1:
+            ax.set_title('Traditional')
+        elif c == 2:
             ax.set_title('Cooperative')
         ax.set_xlim(0, benchmark_time)
-        ax.set_ylim(0, 2000)
+        ax.set_ylim(0, 3000 if c % 3 == 0 else 2000)
 
     handles, labels = axs[0][0].get_legend_handles_labels()
     handles.append(Line2D([], [], color=parameters.plot_colors['no_success_count'], linewidth=1.5))
@@ -221,7 +225,7 @@ def create_figures(result_path: str, figure_path: str):
     }
     ablations = {}
 
-    path = os.path.join(result_path, 'trad-coop/NVMe/q09')
+    path = os.path.join(result_path, 'trad-coop', DISK, 'q09')
     for ablation in ['ablation-inmemory', 'ablation+writeback', 'ablation+idlewriters', 'ablation+evictiontarget'] + ['']:
         basepath = os.path.join(path, ablation)
         name = ablation_labels['full' if ablation == '' else ablation[len('ablation'):]]

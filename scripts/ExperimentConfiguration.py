@@ -13,6 +13,7 @@ class ExperimentConfiguration(object):
         self.oltp = kwargs.get('oltp', 38)
         self.olap = kwargs.get('olap', 'none')
         self.olap_interval = kwargs.get('olap_interval', 30)
+        self.olap_sim_size_pages = kwargs.get('olap_sim_size_pages', 227090)
         self.olap_stdout = kwargs.get('olap_stdout', False)
         self.parallel = kwargs.get('parallel', 0)
         self.sandbox = kwargs.get('sandbox', True)
@@ -34,7 +35,7 @@ class ExperimentConfiguration(object):
 
     def to_commandline(self, output_path: str) -> str:
         full_binary_path = os.path.join('build', self.binary)
-        cmd = f'numactl {self.numactl_args} {full_binary_path} {self.database_path} --ch_path={self.dataset_path} --memory_limit={self.memory_limit} --warmup={self.warmup} --benchmark={self.benchmark} --oltp={self.oltp} --olap={self.olap} --olap_interval={self.olap_interval} --parallel={self.parallel} --partitioning_strategy={self.partitioning_strategy}'
+        cmd = f'numactl {self.numactl_args} {full_binary_path} {self.database_path} --ch_path={self.dataset_path} --memory_limit={self.memory_limit} --warmup={self.warmup} --benchmark={self.benchmark} --oltp={self.oltp} --olap={self.olap} --olap_interval={self.olap_interval} --olap_sim_size_pages={self.olap_sim_size_pages} --parallel={self.parallel} --partitioning_strategy={self.partitioning_strategy}'
         if self.partitioned_num_temp_pages != None:
             cmd += f' --partitioned_num_temp_pages={self.partitioned_num_temp_pages}'
         if self.olap_stdout:

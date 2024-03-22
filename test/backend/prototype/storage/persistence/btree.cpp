@@ -25,7 +25,11 @@ TEST(BTree, lowerBound) {
     EXPECT_EQ(lowerBound<size_t>(array2, 3, 7), 2);
 }
 
-class BTreeFixture : public DBTestFixture { };
+class BTreeFixture : public DBTestFixture {
+protected:
+    template <typename KeyType, typename ValueType>
+    PageId getRootPid(BTree<KeyType, ValueType> tree) { return tree.root_pid; }
+};
 
 TEST_F(BTreeFixture, double_insert) {
     BTree<uint32_t, size_t> tree(db->vmcache, context->getWorkerId());
@@ -347,4 +351,76 @@ TEST_F(BTreeFixture, keyRange) {
     range = tree.keyRange();
     ASSERT_EQ(range.first, 0);
     ASSERT_EQ(range.second, 4);
+}
+
+TEST_F(BTreeFixture, merge) {
+    BTree<RowId, uint64_t> tree(db->vmcache, context->getWorkerId());
+    typedef BTree<RowId, uint64_t>::InnerNode InnerNode;
+    typedef BTree<RowId, uint64_t>::LeafNode LeafNode;
+
+    // setup tree with a root and two leaves
+    ASSERT_EQ(SharedGuard<InnerNode>(db->vmcache, getRootPid(tree), context->getWorkerId())->level, 1);
+    ASSERT_EQ(SharedGuard<InnerNode>(db->vmcache, getRootPid(tree), context->getWorkerId())->n_keys, 0);
+    for (size_t i = 0; i < InnerNode::capacity + 1; i++) {
+        ASSERT_EQ(tree.insertNext(i).key, i);
+    }
+    ASSERT_EQ(SharedGuard<InnerNode>(db->vmcache, getRootPid(tree), context->getWorkerId())->level, 1);
+    ASSERT_EQ(SharedGuard<InnerNode>(db->vmcache, getRootPid(tree), context->getWorkerId())->n_keys, 1);
+
+    // provoke merge by removing entries from left leaf
+    const size_t pre_merge_removals = InnerNode::capacity / 4;
+    for (size_t i = 0; i < pre_merge_removals; i++) {
+        ASSERT_EQ(tree.remove(i), true);
+        ASSERT_EQ(SharedGuard<InnerNode>(db->vmcache, getRootPid(tree), context->getWorkerId())->level, 1);
+        ASSERT_EQ(SharedGuard<InnerNode>(db->vmcache, getRootPid(tree), context->getWorkerId())->n_keys, 1);
+    }
+    // this remove() should cause a merge
+    ASSERT_EQ(tree.remove(pre_merge_removals), true);
+    ASSERT_EQ(SharedGuard<InnerNode>(db->vmcache, getRootPid(tree), context->getWorkerId())->n_keys, 0);
+
+    // make sure that we can still access all keys remaining in the tree after the merge
+    ASSERT_EQ(tree.getCardinality(), InnerNode::capacity - pre_merge_removals);
+    for (size_t i = pre_merge_removals + 1; i < InnerNode::capacity + 1; i++) {
+        auto it = tree.lookupExact(i);
+        ASSERT_NE(it, tree.end());
+        ASSERT_EQ((*it).second, i);
+    }
+}
+
+TEST(BTree, InnerNode_remove) {
+    BTreeInnerNode<RowId, PAGE_SIZE> node;
+    node.n_keys = 4;
+    node.keys[0] = 0;
+    node.keys[1] = 1;
+    node.keys[2] = 2;
+    node.keys[3] = 3;
+    node.children[0] = 1;
+    node.children[1] = 2;
+    node.children[2] = 3;
+    node.children[3] = 4;
+    node.children[4] = 5;
+
+    node.remove(1); // middle child
+    EXPECT_EQ(node.n_keys, 3);
+    EXPECT_EQ(node.keys[0], 1);
+    EXPECT_EQ(node.keys[1], 2);
+    EXPECT_EQ(node.keys[2], 3);
+    EXPECT_EQ(node.children[0], 1);
+    EXPECT_EQ(node.children[1], 3);
+    EXPECT_EQ(node.children[2], 4);
+    EXPECT_EQ(node.children[3], 5);
+
+    node.remove(3); // right child
+    EXPECT_EQ(node.n_keys, 2);
+    EXPECT_EQ(node.keys[0], 1);
+    EXPECT_EQ(node.keys[1], 2);
+    EXPECT_EQ(node.children[0], 1);
+    EXPECT_EQ(node.children[1], 3);
+    EXPECT_EQ(node.children[2], 4);
+
+    node.remove(0); // left child
+    EXPECT_EQ(node.n_keys, 1);
+    EXPECT_EQ(node.keys[0], 1);
+    EXPECT_EQ(node.children[0], 3);
+    EXPECT_EQ(node.children[1], 4);
 }

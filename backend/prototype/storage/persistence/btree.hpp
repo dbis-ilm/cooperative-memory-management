@@ -25,10 +25,9 @@ struct BTreeInnerNode : BTreeNodeHeader<KeyType> {
     KeyType keys[capacity];
 
     inline void remove(size_t i) {
-        // TODO: FIXME for final leaf merge implementation
         assert(i <= this->n_keys);
-        if (i != this->n_keys)
-            memmove(this->keys + i, this->keys + i + 1, sizeof(KeyType) * (this->n_keys - i - 1));
+        if (i != 0)
+            memmove(this->keys + i - 1, this->keys + i, sizeof(KeyType) * (this->n_keys - i));
         memmove(this->children + i, this->children + i + 1, sizeof(PageId) * (this->n_keys - i));
         this->n_keys--;
     }
@@ -178,6 +177,7 @@ size_t lowerBound(const KeyType array[], size_t size, KeyType key) {
 
 template <typename KeyType, typename ValueType, size_t node_size = PAGE_SIZE>
 class BTree {
+    friend class BTreeFixture;
 public:
     typedef BTreeInnerNode<KeyType, node_size> InnerNode;
     typedef BTreeLeafNode<KeyType, ValueType, node_size> LeafNode;
@@ -532,17 +532,14 @@ public:
                 size_t l = lowerBound<KeyType>(leaf->keys, leaf->n_keys, key);
                 if (l >= leaf->n_keys || leaf->keys[l] != key)
                     return false;
-                // TODO: finalize and test merge implementation
-                if (false && leaf->n_keys - 1 <= LeafNode::capacity / 4 && parent->n_keys >= 2 && (leaf_pos + 1) <= parent->n_keys) {
+                if (leaf->n_keys - 1 <= LeafNode::capacity / 4 && parent->n_keys >= 1 && (leaf_pos + 1) <= parent->n_keys) {
                     // underfull, attempt merge with next node
                     ExclusiveGuard<InnerNode> parent_x(std::move(parent));
                     ExclusiveGuard<LeafNode> leaf_x(std::move(leaf));
                     ExclusiveGuard<LeafNode> right_x(vmcache, parent_x->children[leaf_pos + 1], worker_id);
                     leaf_x->remove(l);
-                    if (right_x->n_keys <= LeafNode::capacity / 4) { // TODO: does this condition make sense? e.g., if 'leaf' is completely empty, maybe we should merge regardless of the state of 'right'
-                        if (leaf_x->merge(leaf_pos, parent_x.data, right_x.data)) {
-                            // TODO: actually free up the page taken up by the right node
-                        }
+                    if (leaf_x->merge(leaf_pos, parent_x.data, right_x.data)) {
+                        // TODO: actually free up the page taken up by the right node
                     }
                 } else {
                     ExclusiveGuard<LeafNode> leaf_x(std::move(leaf));
